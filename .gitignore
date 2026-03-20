@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+wallet.json
+sniper.db
+scout.db
+.pytest_cache/
+dist/
+build/
+*.egg
+.mypy_cache/

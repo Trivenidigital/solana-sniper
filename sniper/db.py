@@ -1,0 +1,194 @@
+"""Async SQLite database layer for the sniper bot."""
+
+from datetime import datetime, timezone
+from pathlib import Path
+
+import aiosqlite
+
+from sniper.models import Position
+
+
+class Database:
+    """Thin async wrapper around an aiosqlite connection."""
+
+    def __init__(self, db_path: str | Path) -> None:
+        self._db_path = str(db_path)
+        self._conn: aiosqlite.Connection | None = None
+
+    async def initialize(self) -> None:
+        self._conn = await aiosqlite.connect(self._db_path)
+        self._conn.row_factory = aiosqlite.Row
+        await self._create_tables()
+
+    async def close(self) -> None:
+        if self._conn:
+            await self._conn.close()
+            self._conn = None
+
+    async def _create_tables(self) -> None:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        await self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS positions (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                contract_address   TEXT NOT NULL,
+                token_name         TEXT NOT NULL,
+                ticker             TEXT NOT NULL,
+                entry_sol          REAL NOT NULL,
+                entry_token_amount REAL NOT NULL,
+                entry_price_usd    REAL DEFAULT 0,
+                entry_tx           TEXT,
+                exit_sol           REAL,
+                exit_price_usd     REAL,
+                exit_tx            TEXT,
+                exit_reason        TEXT,
+                status             TEXT NOT NULL DEFAULT 'open',
+                pnl_sol            REAL,
+                pnl_pct            REAL,
+                paper              INTEGER NOT NULL DEFAULT 1,
+                opened_at          TEXT NOT NULL,
+                closed_at          TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS trades (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                position_id   INTEGER NOT NULL,
+                side          TEXT NOT NULL,
+                sol_amount    REAL NOT NULL,
+                token_amount  REAL NOT NULL,
+                tx_signature  TEXT,
+                price_usd     REAL,
+                executed_at   TEXT NOT NULL,
+                FOREIGN KEY (position_id) REFERENCES positions(id)
+            );
+            """
+        )
+
+    # ------------------------------------------------------------------
+    # Positions
+    # ------------------------------------------------------------------
+
+    async def open_position(self, pos: Position) -> int:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        cursor = await self._conn.execute(
+            """INSERT INTO positions
+               (contract_address, token_name, ticker, entry_sol, entry_token_amount,
+                entry_price_usd, entry_tx, status, paper, opened_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
+            (
+                pos.contract_address, pos.token_name, pos.ticker,
+                pos.entry_sol, pos.entry_token_amount, pos.entry_price_usd,
+                pos.entry_tx, 1 if pos.paper else 0,
+                pos.opened_at.isoformat(),
+            ),
+        )
+        await self._conn.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+
+    async def close_position(
+        self,
+        position_id: int,
+        exit_sol: float,
+        exit_price_usd: float,
+        exit_tx: str | None,
+        exit_reason: str,
+        pnl_sol: float,
+        pnl_pct: float,
+    ) -> None:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        now = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            """UPDATE positions SET
+               exit_sol=?, exit_price_usd=?, exit_tx=?, exit_reason=?,
+               status='closed', pnl_sol=?, pnl_pct=?, closed_at=?
+               WHERE id=?""",
+            (exit_sol, exit_price_usd, exit_tx, exit_reason, pnl_sol, pnl_pct, now, position_id),
+        )
+        await self._conn.commit()
+
+    async def get_open_positions(self) -> list[Position]:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        cursor = await self._conn.execute(
+            "SELECT * FROM positions WHERE status='open'"
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_position(row) for row in rows]
+
+    async def get_open_position_by_address(self, contract_address: str) -> Position | None:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        cursor = await self._conn.execute(
+            "SELECT * FROM positions WHERE contract_address=? AND status='open' LIMIT 1",
+            (contract_address,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_position(row) if row else None
+
+    async def count_open_positions(self) -> int:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        cursor = await self._conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE status='open'"
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def get_total_exposure_sol(self) -> float:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        cursor = await self._conn.execute(
+            "SELECT COALESCE(SUM(entry_sol), 0) FROM positions WHERE status='open'"
+        )
+        row = await cursor.fetchone()
+        return float(row[0]) if row else 0.0
+
+    async def get_realized_pnl(self) -> float:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        cursor = await self._conn.execute(
+            "SELECT COALESCE(SUM(pnl_sol), 0) FROM positions WHERE status='closed'"
+        )
+        row = await cursor.fetchone()
+        return float(row[0]) if row else 0.0
+
+    # ------------------------------------------------------------------
+    # Trades
+    # ------------------------------------------------------------------
+
+    async def log_trade(
+        self,
+        position_id: int,
+        side: str,
+        sol_amount: float,
+        token_amount: float,
+        tx_signature: str | None,
+        price_usd: float | None,
+    ) -> None:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        now = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            """INSERT INTO trades
+               (position_id, side, sol_amount, token_amount, tx_signature, price_usd, executed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (position_id, side, sol_amount, token_amount, tx_signature, price_usd, now),
+        )
+        await self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _row_to_position(row: aiosqlite.Row) -> Position:
+        d = dict(row)
+        d["paper"] = bool(d.get("paper", 1))
+        if d.get("opened_at"):
+            d["opened_at"] = datetime.fromisoformat(d["opened_at"])
+        if d.get("closed_at"):
+            d["closed_at"] = datetime.fromisoformat(d["closed_at"])
+        return Position(**d)
