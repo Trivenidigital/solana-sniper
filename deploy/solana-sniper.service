@@ -1,0 +1,19 @@
+[Unit]
+Description=Solana Sniper Trading Bot
+After=network.target coinpump-scout.service
+Wants=coinpump-scout.service
+
+[Service]
+Type=simple
+User=sniper
+WorkingDirectory=/opt/sniper
+ExecStart=/home/sniper/.local/bin/uv run python -m sniper --live
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=solana-sniper
+Environment=PATH=/home/sniper/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target

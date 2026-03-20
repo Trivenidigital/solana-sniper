@@ -1,0 +1,40 @@
+# ============================================================================
+# Dockerfile for CoinPump Scout
+# Used by docker-compose.yml for the scout service.
+#
+# Build context should be the coinpump-scout repo root.
+# ============================================================================
+
+# ── Stage 1: Build dependencies ────────────────────────────────────────────
+FROM python:3.12-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+RUN uv sync --no-dev --no-install-project
+
+COPY scout/ scout/
+RUN uv sync --no-dev
+
+# ── Stage 2: Runtime ───────────────────────────────────────────────────────
+FROM python:3.12-slim AS runtime
+
+RUN groupadd --system scout && \
+    useradd --system --gid scout --create-home scout
+
+WORKDIR /app
+
+COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /app/scout /app/scout
+COPY --from=builder /app/pyproject.toml /app/
+
+RUN mkdir -p /app/data && chown -R scout:scout /app
+
+ENV PATH="/app/.venv/bin:$PATH"
+ENV SCOUT_DB_PATH="/app/data/scout.db"
+
+USER scout
+
+CMD ["python", "-m", "scout.main"]

@@ -1,0 +1,18 @@
+[Unit]
+Description=Solana Sniper Web Dashboard
+After=network.target solana-sniper.service
+
+[Service]
+Type=simple
+User=sniper
+WorkingDirectory=/opt/sniper
+ExecStart=/home/sniper/.local/bin/uv run python -m sniper.web --host 127.0.0.1 --port 8080
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sniper-dashboard
+Environment=PATH=/home/sniper/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target

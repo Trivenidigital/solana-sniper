@@ -1,0 +1,81 @@
+# ============================================================================
+# Docker Compose — Solana Sniper + CoinPump Scout + Dashboard
+#
+# Usage:
+#   docker compose -f deploy/docker-compose.yml up -d
+#   docker compose -f deploy/docker-compose.yml logs -f
+#   docker compose -f deploy/docker-compose.yml down
+#
+# Prerequisites:
+#   - Place .env files in the project root directories
+#   - Place wallet.json in the solana-sniper root
+# ============================================================================
+
+services:
+  # ── CoinPump Scout ───────────────────────────────────────────────────────
+  scout:
+    build:
+      context: ../coinpump-scout
+      dockerfile: ../solana-sniper/deploy/Dockerfile.scout
+    container_name: coinpump-scout
+    restart: always
+    env_file:
+      - ../coinpump-scout/.env
+    volumes:
+      - scout-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sqlite3; sqlite3.connect('/app/data/scout.db').execute('SELECT 1')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Solana Sniper ────────────────────────────────────────────────────────
+  sniper:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: solana-sniper
+    restart: always
+    depends_on:
+      scout:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      - SCOUT_DB_PATH=/app/data/scout.db
+      - SNIPER_DB_PATH=/app/data/sniper.db
+    volumes:
+      - scout-data:/app/data/scout:ro
+      - sniper-data:/app/data
+      - ../wallet.json:/app/wallet.json:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sqlite3; sqlite3.connect('/app/data/sniper.db').execute('SELECT 1')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Web Dashboard ────────────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: sniper-dashboard
+    restart: always
+    depends_on:
+      sniper:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      - SNIPER_DB_PATH=/app/data/sniper.db
+    command: ["python", "-m", "sniper.web", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - sniper-data:/app/data:ro
+
+volumes:
+  scout-data:
+    driver: local
+  sniper-data:
+    driver: local

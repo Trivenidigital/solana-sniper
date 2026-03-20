@@ -1,0 +1,18 @@
+[Unit]
+Description=CoinPump Scout Token Detection
+After=network.target
+
+[Service]
+Type=simple
+User=sniper
+WorkingDirectory=/opt/scout
+ExecStart=/home/sniper/.local/bin/uv run python -m scout.main
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=coinpump-scout
+Environment=PATH=/home/sniper/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target
