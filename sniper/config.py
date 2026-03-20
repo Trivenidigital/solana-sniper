@@ -40,12 +40,41 @@ class Settings(BaseSettings):
     # Cooldown
     COOLDOWN_HOURS: int = 6
 
-    # Trailing take-profit
+    # Trailing take-profit (legacy — kept for backwards compat)
     TRAILING_TRIGGER_PCT: float = 50.0
     TRAILING_STOP_PCT: float = 20.0
 
     # Partial exits
     PARTIAL_SELL_FRACTION: float = 0.5
+
+    # Time-based exit phases (minutes)
+    PROTECTION_WINDOW_MIN: int = 10
+    MOMENTUM_CHECK_MIN: int = 30
+    MAX_HOLD_MIN: int = 60
+
+    # Phase thresholds
+    RUG_DETECT_PCT: float = 50.0        # Phase 1: exit if down this much
+    MOMENTUM_LOSS_PCT: float = 10.0     # Phase 2: exit if down this much
+    PUMP_WINDOW_MIN_GAIN_PCT: float = 20.0  # Phase 3: must be up this much
+    TRAILING_ACTIVATE_PCT: float = 30.0  # Activate trailing at this gain
+
+    # Phase 4 cleanup threshold
+    PHASE4_TRAILING_MIN_PNL: float = 50.0
+
+    # Trailing tiers
+    TRAILING_TIER1_PCT: float = 20.0    # 30-100% gain: trail at 20%
+    TRAILING_TIER2_PCT: float = 15.0    # 100-200% gain: trail at 15%
+    TRAILING_TIER3_PCT: float = 10.0    # 200%+ gain: trail at 10%
+
+    # Buy speed enforcement
+    BUY_TIMEOUT_SECONDS: int = 30
+
+    # Hard quality gates
+    MAX_TOP3_CONCENTRATION: float = 0.50
+    MIN_HOLDER_COUNT: int = 5
+
+    # Signal freshness
+    MAX_SIGNAL_AGE_SECONDS: int = 30
 
     # Jupiter
     JUPITER_API_URL: str = "https://lite-api.jup.ag/swap/v1"

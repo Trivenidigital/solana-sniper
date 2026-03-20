@@ -80,6 +80,7 @@ class Database:
             ("peak_value_sol", "REAL"),
             ("trailing_active", "INTEGER DEFAULT 0"),
             ("partial_exit_done", "INTEGER DEFAULT 0"),
+            ("partial_exit_tier", "INTEGER DEFAULT 0"),
         ]:
             try:
                 await self._conn.execute(
@@ -262,6 +263,17 @@ class Database:
         )
         await self._conn.commit()
 
+    async def update_partial_exit(
+        self, position_id: int, new_entry_sol: float, new_token_amount: float, partial_tier: int,
+    ) -> None:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        await self._conn.execute(
+            "UPDATE positions SET entry_sol=?, entry_token_amount=?, partial_exit_tier=?, partial_exit_done=1 WHERE id=?",
+            (new_entry_sol, new_token_amount, partial_tier, position_id),
+        )
+        await self._conn.commit()
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -272,6 +284,7 @@ class Database:
         d["paper"] = bool(d.get("paper", 1))
         d["trailing_active"] = bool(d.get("trailing_active", 0))
         d["partial_exit_done"] = bool(d.get("partial_exit_done", 0))
+        d["partial_exit_tier"] = int(d.get("partial_exit_tier", 0))
         if d.get("opened_at"):
             d["opened_at"] = datetime.fromisoformat(d["opened_at"])
         if d.get("closed_at"):

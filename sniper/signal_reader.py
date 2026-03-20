@@ -1,6 +1,6 @@
 """Read high-conviction signals from coinpump-scout's database."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -34,7 +34,9 @@ async def read_new_signals(
                 SELECT c.contract_address, c.chain, c.token_name, c.ticker,
                        a.conviction_score, c.market_cap_usd, c.liquidity_usd,
                        c.volume_24h_usd, a.alerted_at,
-                       COALESCE(c.token_age_days, 0) AS token_age_days
+                       COALESCE(c.token_age_days, 0) AS token_age_days,
+                       COALESCE(c.top3_wallet_concentration, 0) AS top3_wallet_concentration,
+                       COALESCE(c.holder_count, 0) AS holder_count
                 FROM alerts a
                 JOIN candidates c ON a.contract_address = c.contract_address
                 WHERE a.chain = 'solana'
@@ -47,7 +49,10 @@ async def read_new_signals(
             rows = await cursor.fetchall()
             for row in rows:
                 d = dict(row)
-                d["alerted_at"] = datetime.fromisoformat(d["alerted_at"])
+                alerted_at = datetime.fromisoformat(d["alerted_at"])
+                if alerted_at.tzinfo is None:
+                    alerted_at = alerted_at.replace(tzinfo=timezone.utc)
+                d["alerted_at"] = alerted_at
                 signals.append(Signal(**d))
     except Exception:
         logger.warning("Failed to read scout database", path=str(scout_db_path), exc_info=True)
@@ -71,7 +76,33 @@ async def filter_actionable(
     - Token is on cooldown after a stop-loss
     """
     actionable: list[Signal] = []
+    now = datetime.now(timezone.utc)
     for signal in signals:
+        # Ensure timezone-aware datetime
+        if signal.alerted_at.tzinfo is None:
+            signal.alerted_at = signal.alerted_at.replace(tzinfo=timezone.utc)
+        # Signal freshness gate
+        signal_age_seconds = (now - signal.alerted_at).total_seconds()
+        if signal_age_seconds > settings.MAX_SIGNAL_AGE_SECONDS:
+            logger.debug("Signal too old", token=signal.token_name, age_seconds=signal_age_seconds)
+            continue
+        # Hard quality gates
+        if signal.top3_wallet_concentration > settings.MAX_TOP3_CONCENTRATION:
+            logger.debug(
+                "Top3 wallet concentration too high",
+                token=signal.token_name,
+                concentration=signal.top3_wallet_concentration,
+                max_allowed=settings.MAX_TOP3_CONCENTRATION,
+            )
+            continue
+        if signal.holder_count < settings.MIN_HOLDER_COUNT:
+            logger.debug(
+                "Holder count too low",
+                token=signal.token_name,
+                holder_count=signal.holder_count,
+                min_required=settings.MIN_HOLDER_COUNT,
+            )
+            continue
         if signal.liquidity_usd < settings.MIN_LIQUIDITY_USD:
             continue
         if signal.token_age_days > settings.MAX_TOKEN_AGE_DAYS:

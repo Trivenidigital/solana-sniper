@@ -1,6 +1,7 @@
-"""Position monitoring — stop-loss and take-profit checks."""
+"""Position monitoring — time-based phase exits with trailing tiers."""
 
 import asyncio
+from datetime import datetime, timezone
 
 import aiohttp
 import structlog
@@ -22,9 +23,16 @@ async def check_positions(
     session: aiohttp.ClientSession,
     settings: Settings,
 ) -> list[str]:
-    """Check all open positions for stop-loss and take-profit triggers.
+    """Check all open positions using time-based phase exit strategy.
 
-    Fetches all position prices in parallel using asyncio.gather for speed.
+    Phases:
+      1. Protection (0-10 min): only exit on rug detection
+      2. Momentum (10-30 min): exit on momentum loss, activate trailing
+      3. Pump window (30-60 min): must show minimum gain or exit
+      4. Cleanup (60+ min): force exit unless trailing with large gain
+
+    Trailing tiers are checked BEFORE phases so active trails are managed
+    regardless of which phase the position is in.
 
     Returns list of action descriptions for logging.
     """
@@ -52,76 +60,48 @@ async def check_positions(
             continue
 
         pnl_pct = ((current_value - pos.entry_sol) / pos.entry_sol) * 100
+        age_minutes = (datetime.now(timezone.utc) - pos.opened_at).total_seconds() / 60
 
-        # Stop-loss check
-        if pnl_pct <= -settings.STOP_LOSS_PCT:
-            action = await _close_position(
-                db, client, keypair, session, settings,
-                pos.id, pos.contract_address, pos.token_name,
-                int(pos.entry_token_amount), pos.entry_sol,
-                current_value, pnl_pct, "stop_loss",
-            )
-            # Set cooldown after stop-loss
-            await db.set_cooldown(pos.contract_address, settings.COOLDOWN_HOURS)
-            actions.append(action)
-            continue
-
-        # --- Partial take-profit ---
-        partial_tp_pct = settings.TAKE_PROFIT_PCT / 2
-        if (
-            pnl_pct >= partial_tp_pct
-            and not pos.partial_exit_done
-            and pos.id is not None
-        ):
-            try:
-                sell_tokens = int(pos.entry_token_amount * settings.PARTIAL_SELL_FRACTION)
-                remaining_tokens = pos.entry_token_amount - sell_tokens
-                tx_sig, sol_received = await execute_sell(
-                    client, keypair, session,
-                    pos.contract_address, sell_tokens, settings,
-                )
-                await db.log_trade(
-                    position_id=pos.id,
-                    side="sell",
-                    sol_amount=sol_received,
-                    token_amount=float(sell_tokens),
-                    tx_signature=tx_sig,
-                    price_usd=None,
-                )
-                await db.mark_partial_exit(pos.id, remaining_tokens)
-                # Update local state for subsequent checks in this iteration
-                pos.entry_token_amount = remaining_tokens
-                pos.partial_exit_done = True
-                action = (
-                    f"PARTIAL_TP: {pos.token_name} sold {settings.PARTIAL_SELL_FRACTION*100:.0f}% "
-                    f"at {pnl_pct:.1f}% gain ({sol_received:.4f} SOL)"
-                )
-                logger.info(action, tx=tx_sig)
-                actions.append(action)
-            except Exception as e:
-                logger.error("Partial exit failed", token=pos.token_name, error=str(e))
-
-        # --- Trailing take-profit tracking ---
-        # Update peak value
-        if pos.id is not None:
-            if pos.peak_value_sol is None or current_value > pos.peak_value_sol:
+        # --- Trailing stop management (runs BEFORE phase checks) ---
+        if pos.trailing_active and pos.id is not None:
+            # Update peak value
+            if current_value > (pos.peak_value_sol or 0):
                 pos.peak_value_sol = current_value
                 await db.update_peak_value(pos.id, current_value)
 
-            # Activate trailing if gain exceeds trigger
-            if pnl_pct >= settings.TRAILING_TRIGGER_PCT and not pos.trailing_active:
-                pos.trailing_active = True
-                await db.set_trailing_active(pos.id)
-                logger.info(
-                    "Trailing stop activated",
+            if pos.peak_value_sol is not None and pos.peak_value_sol > 0:
+                peak_pnl = ((pos.peak_value_sol - pos.entry_sol) / pos.entry_sol) * 100
+                drop_from_peak = ((pos.peak_value_sol - current_value) / pos.peak_value_sol) * 100
+
+                # Determine trail percentage based on peak gain tier
+                if peak_pnl > 200:
+                    trail_pct = settings.TRAILING_TIER3_PCT  # 10%
+                    # Tier 2 partial sell: 50% of remaining (25% of original) if tier < 2
+                    if pos.partial_exit_tier < 2:
+                        await _partial_sell(
+                            db, client, keypair, session, settings,
+                            pos, 0.50, pnl_pct, actions, tier=2,
+                        )
+                elif peak_pnl > 100:
+                    trail_pct = settings.TRAILING_TIER2_PCT  # 15%
+                    # Tier 1 partial sell: 50% if tier < 1
+                    if pos.partial_exit_tier < 1:
+                        await _partial_sell(
+                            db, client, keypair, session, settings,
+                            pos, 0.50, pnl_pct, actions, tier=1,
+                        )
+                else:
+                    trail_pct = settings.TRAILING_TIER1_PCT  # 20%
+
+                logger.debug(
+                    "Trailing check",
                     token=pos.token_name,
-                    pnl_pct=f"{pnl_pct:.1f}%",
+                    peak_pnl=f"{peak_pnl:.1f}%",
+                    drop_from_peak=f"{drop_from_peak:.1f}%",
+                    trail_pct=f"{trail_pct}%",
                 )
 
-            # Check trailing stop
-            if pos.trailing_active and pos.peak_value_sol is not None and pos.peak_value_sol > 0:
-                drop_from_peak = ((pos.peak_value_sol - current_value) / pos.peak_value_sol) * 100
-                if drop_from_peak >= settings.TRAILING_STOP_PCT:
+                if drop_from_peak >= trail_pct:
                     action = await _close_position(
                         db, client, keypair, session, settings,
                         pos.id, pos.contract_address, pos.token_name,
@@ -131,27 +111,178 @@ async def check_positions(
                     actions.append(action)
                     continue
 
-        # Take-profit check (full exit)
-        if pnl_pct >= settings.TAKE_PROFIT_PCT:
-            action = await _close_position(
-                db, client, keypair, session, settings,
-                pos.id, pos.contract_address, pos.token_name,
-                int(pos.entry_token_amount), pos.entry_sol,
-                current_value, pnl_pct, "take_profit",
-            )
-            actions.append(action)
-            continue
+        # --- Phase-based exit logic ---
+
+        # Phase 1: Protection (0-10 min)
+        if age_minutes <= settings.PROTECTION_WINDOW_MIN:
+            if pnl_pct <= -settings.RUG_DETECT_PCT:
+                logger.warning(
+                    "Rug detected in protection phase",
+                    token=pos.token_name,
+                    pnl_pct=f"{pnl_pct:.1f}%",
+                    age_minutes=f"{age_minutes:.1f}",
+                )
+                action = await _close_position(
+                    db, client, keypair, session, settings,
+                    pos.id, pos.contract_address, pos.token_name,
+                    int(pos.entry_token_amount), pos.entry_sol,
+                    current_value, pnl_pct, "rug_detected",
+                )
+                await db.set_cooldown(pos.contract_address, settings.COOLDOWN_HOURS)
+                actions.append(action)
+                continue
+            else:
+                logger.debug(
+                    "Phase 1 (protection)",
+                    token=pos.token_name,
+                    pnl_pct=f"{pnl_pct:.1f}%",
+                    age_minutes=f"{age_minutes:.1f}",
+                )
+
+        # Phase 2: Momentum (10-30 min)
+        elif age_minutes <= settings.MOMENTUM_CHECK_MIN:
+            if pnl_pct <= -settings.MOMENTUM_LOSS_PCT:
+                logger.info(
+                    "Momentum lost in phase 2",
+                    token=pos.token_name,
+                    pnl_pct=f"{pnl_pct:.1f}%",
+                    age_minutes=f"{age_minutes:.1f}",
+                )
+                action = await _close_position(
+                    db, client, keypair, session, settings,
+                    pos.id, pos.contract_address, pos.token_name,
+                    int(pos.entry_token_amount), pos.entry_sol,
+                    current_value, pnl_pct, "momentum_lost",
+                )
+                await db.set_cooldown(pos.contract_address, settings.COOLDOWN_HOURS)
+                actions.append(action)
+                continue
+            elif pnl_pct >= settings.TRAILING_ACTIVATE_PCT and not pos.trailing_active and pos.id is not None:
+                pos.trailing_active = True
+                await db.set_trailing_active(pos.id)
+                # Initialize peak value
+                if pos.peak_value_sol is None or current_value > pos.peak_value_sol:
+                    pos.peak_value_sol = current_value
+                    await db.update_peak_value(pos.id, current_value)
+                logger.info(
+                    "Trailing stop activated in phase 2",
+                    token=pos.token_name,
+                    pnl_pct=f"{pnl_pct:.1f}%",
+                    age_minutes=f"{age_minutes:.1f}",
+                )
+
+        # Phase 3: Pump window (30-60 min)
+        elif age_minutes <= settings.MAX_HOLD_MIN:
+            if not pos.trailing_active and pnl_pct < settings.PUMP_WINDOW_MIN_GAIN_PCT:
+                logger.info(
+                    "Pump window expired in phase 3",
+                    token=pos.token_name,
+                    pnl_pct=f"{pnl_pct:.1f}%",
+                    age_minutes=f"{age_minutes:.1f}",
+                    required_gain=f"{settings.PUMP_WINDOW_MIN_GAIN_PCT}%",
+                )
+                action = await _close_position(
+                    db, client, keypair, session, settings,
+                    pos.id, pos.contract_address, pos.token_name,
+                    int(pos.entry_token_amount), pos.entry_sol,
+                    current_value, pnl_pct, "pump_window_expired",
+                )
+                await db.set_cooldown(pos.contract_address, settings.COOLDOWN_HOURS)
+                actions.append(action)
+                continue
+            # Activate trailing if gain is sufficient and not already active
+            elif pnl_pct >= settings.TRAILING_ACTIVATE_PCT and not pos.trailing_active and pos.id is not None:
+                pos.trailing_active = True
+                await db.set_trailing_active(pos.id)
+                if pos.peak_value_sol is None or current_value > pos.peak_value_sol:
+                    pos.peak_value_sol = current_value
+                    await db.update_peak_value(pos.id, current_value)
+                logger.info(
+                    "Trailing stop activated in phase 3",
+                    token=pos.token_name,
+                    pnl_pct=f"{pnl_pct:.1f}%",
+                    age_minutes=f"{age_minutes:.1f}",
+                )
+
+        # Phase 4: Cleanup (60+ min)
+        else:
+            if not (pos.trailing_active and pnl_pct > settings.PHASE4_TRAILING_MIN_PNL):
+                logger.info(
+                    "Max hold exceeded in phase 4",
+                    token=pos.token_name,
+                    pnl_pct=f"{pnl_pct:.1f}%",
+                    age_minutes=f"{age_minutes:.1f}",
+                    trailing_active=pos.trailing_active,
+                )
+                action = await _close_position(
+                    db, client, keypair, session, settings,
+                    pos.id, pos.contract_address, pos.token_name,
+                    int(pos.entry_token_amount), pos.entry_sol,
+                    current_value, pnl_pct, "max_hold_exceeded",
+                )
+                await db.set_cooldown(pos.contract_address, settings.COOLDOWN_HOURS)
+                actions.append(action)
+                continue
 
         logger.debug(
             "Position check",
             token=pos.token_name,
             pnl_pct=f"{pnl_pct:.1f}%",
             current_value_sol=f"{current_value:.4f}",
+            age_minutes=f"{age_minutes:.1f}",
             trailing_active=pos.trailing_active,
             peak_value_sol=pos.peak_value_sol,
         )
 
     return actions
+
+
+async def _partial_sell(
+    db: Database,
+    client: AsyncClient,
+    keypair: Keypair,
+    session: aiohttp.ClientSession,
+    settings: Settings,
+    pos,
+    fraction: float,
+    pnl_pct: float,
+    actions: list[str],
+    tier: int = 1,
+) -> None:
+    """Execute a partial sell of a position and mark it in the DB."""
+    if pos.id is None:
+        return
+    try:
+        sell_tokens = int(pos.entry_token_amount * fraction)
+        remaining_tokens = pos.entry_token_amount - sell_tokens
+        tx_sig, sol_received = await execute_sell(
+            client, keypair, session,
+            pos.contract_address, sell_tokens, settings,
+        )
+        await db.log_trade(
+            position_id=pos.id,
+            side="sell",
+            sol_amount=sol_received,
+            token_amount=float(sell_tokens),
+            tx_signature=tx_sig,
+            price_usd=None,
+        )
+        # Adjust entry_sol proportionally to reflect the fraction sold
+        fraction_sold = sell_tokens / pos.entry_token_amount if pos.entry_token_amount > 0 else fraction
+        new_entry_sol = pos.entry_sol * (1 - fraction_sold)
+        await db.update_partial_exit(pos.id, new_entry_sol, remaining_tokens, tier)
+        pos.entry_sol = new_entry_sol
+        pos.entry_token_amount = remaining_tokens
+        pos.partial_exit_done = True
+        pos.partial_exit_tier = tier
+        action = (
+            f"PARTIAL_SELL(T{tier}): {pos.token_name} sold {fraction*100:.0f}% "
+            f"at {pnl_pct:.1f}% gain ({sol_received:.4f} SOL)"
+        )
+        logger.info(action, tx=tx_sig)
+        actions.append(action)
+    except Exception as e:
+        logger.error("Partial sell failed", token=pos.token_name, fraction=fraction, error=str(e))
 
 
 async def _close_position(
@@ -175,6 +306,7 @@ async def _close_position(
             client, keypair, session, contract_address, token_amount, settings,
         )
         pnl_sol = sol_received - entry_sol
+        pnl_pct = (pnl_sol / entry_sol * 100) if entry_sol > 0 else 0
         await db.close_position(
             position_id=position_id,  # type: ignore[arg-type]
             exit_sol=sol_received,

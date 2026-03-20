@@ -19,6 +19,9 @@ class Signal(BaseModel):
     volume_24h_usd: float = 0
     alerted_at: datetime
     token_age_days: float = 0
+    quant_score: float | None = 0
+    top3_wallet_concentration: float = 0
+    holder_count: int = 0
 
 
 class Position(BaseModel):
@@ -35,7 +38,10 @@ class Position(BaseModel):
     exit_sol: float | None = None
     exit_price_usd: float | None = None
     exit_tx: str | None = None
-    exit_reason: Literal["stop_loss", "take_profit", "trailing_stop", "manual"] | None = None
+    exit_reason: Literal[
+        "stop_loss", "take_profit", "trailing_stop", "manual",
+        "rug_detected", "momentum_lost", "pump_window_expired", "max_hold_exceeded",
+    ] | None = None
     status: Literal["open", "closed"] = "open"
     pnl_sol: float | None = None
     pnl_pct: float | None = None
@@ -45,6 +51,7 @@ class Position(BaseModel):
     peak_value_sol: float | None = None
     trailing_active: bool = False
     partial_exit_done: bool = False
+    partial_exit_tier: int = 0
 
 
 class JupiterQuote(BaseModel):

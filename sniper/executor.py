@@ -22,6 +22,33 @@ from sniper.jupiter import (
 
 logger = structlog.get_logger()
 
+# Module-level cache for token decimals (contract_address -> decimals)
+_decimals_cache: dict[str, int] = {}
+
+
+async def _get_token_decimals(contract_address: str, session: aiohttp.ClientSession, settings: Settings) -> int:
+    """Fetch token decimals from Solana RPC, with caching and fallback."""
+    if contract_address in _decimals_cache:
+        return _decimals_cache[contract_address]
+    try:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getAccountInfo",
+            "params": [contract_address, {"encoding": "jsonParsed"}],
+        }
+        async with session.post(
+            settings.SOLANA_RPC_URL, json=payload, timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            data = await resp.json()
+            parsed = data["result"]["value"]["data"]["parsed"]["info"]
+            decimals = int(parsed["decimals"])
+            _decimals_cache[contract_address] = decimals
+            return decimals
+    except Exception:
+        # Fallback: pump.fun tokens are 6, most others are 9
+        return 6 if contract_address.endswith("pump") else 9
+
 
 async def execute_buy(
     client: AsyncClient,
@@ -134,7 +161,7 @@ async def get_current_value_sol(
                     price_native = pair.get("priceNative")
                     if price_native:
                         price_sol = float(price_native)
-                        decimals = 6 if contract_address.endswith("pump") else 9
+                        decimals = await _get_token_decimals(contract_address, session, settings)
                         human_tokens = token_amount / (10 ** decimals)
                         return human_tokens * price_sol
     except Exception:
