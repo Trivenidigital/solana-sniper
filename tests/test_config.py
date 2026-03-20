@@ -1,12 +1,16 @@
 """Tests for configuration."""
 
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 from sniper.config import Settings
 
 
 def test_settings_defaults():
-    s = Settings()
+    # Override env vars so .env file doesn't interfere
+    with patch.dict(os.environ, {"MAX_BUY_SOL": "0.1"}, clear=False):
+        s = Settings()
     assert s.PAPER_MODE is True
     assert s.MAX_BUY_SOL == 0.1
     assert s.MAX_PORTFOLIO_SOL == 1.0

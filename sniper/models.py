@@ -18,6 +18,7 @@ class Signal(BaseModel):
     liquidity_usd: float = 0
     volume_24h_usd: float = 0
     alerted_at: datetime
+    token_age_days: float = 0
 
 
 class Position(BaseModel):
@@ -34,13 +35,16 @@ class Position(BaseModel):
     exit_sol: float | None = None
     exit_price_usd: float | None = None
     exit_tx: str | None = None
-    exit_reason: Literal["stop_loss", "take_profit", "manual"] | None = None
+    exit_reason: Literal["stop_loss", "take_profit", "trailing_stop", "manual"] | None = None
     status: Literal["open", "closed"] = "open"
     pnl_sol: float | None = None
     pnl_pct: float | None = None
     opened_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     closed_at: datetime | None = None
     paper: bool = True
+    peak_value_sol: float | None = None
+    trailing_active: bool = False
+    partial_exit_done: bool = False
 
 
 class JupiterQuote(BaseModel):

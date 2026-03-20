@@ -12,10 +12,12 @@ from solana.rpc.async_api import AsyncClient
 from sniper.config import Settings
 from sniper.dashboard import print_dashboard
 from sniper.db import Database
-from sniper.executor import execute_buy
+from sniper.executor import execute_buy, execute_buy_split
 from sniper.models import Position
 from sniper.position_manager import check_positions, portfolio_summary
+from sniper.safety import check_token_safety
 from sniper.signal_reader import filter_actionable, read_new_signals
+from sniper.telegram_notify import send_telegram
 from sniper.wallet import get_sol_balance, load_keypair
 
 logger = structlog.get_logger()
@@ -147,14 +149,36 @@ async def main() -> None:
                                     logger.warning("Insufficient SOL", balance=bal)
                                     break
 
+                            # Anti-rug safety check
+                            is_safe = await check_token_safety(
+                                session, sig_data.contract_address,
+                            )
+                            if not is_safe:
+                                logger.warning(
+                                    "Token failed safety check — skipping",
+                                    token=sig_data.token_name,
+                                )
+                                continue
+
                             # Execute buy
                             try:
-                                tx_sig, tokens = await execute_buy(
-                                    rpc_client, keypair, session,
-                                    sig_data.contract_address,
-                                    settings.MAX_BUY_SOL,
-                                    settings,
-                                )
+                                if settings.SPLIT_ORDERS:
+                                    tx_sigs, tokens = await execute_buy_split(
+                                        rpc_client, keypair, session,
+                                        sig_data.contract_address,
+                                        settings.MAX_BUY_SOL,
+                                        settings,
+                                        num_splits=settings.SPLIT_COUNT,
+                                        delay_seconds=settings.SPLIT_DELAY_SECONDS,
+                                    )
+                                    tx_sig = tx_sigs[0]  # Use first tx as entry reference
+                                else:
+                                    tx_sig, tokens = await execute_buy(
+                                        rpc_client, keypair, session,
+                                        sig_data.contract_address,
+                                        settings.MAX_BUY_SOL,
+                                        settings,
+                                    )
                                 pos = Position(
                                     contract_address=sig_data.contract_address,
                                     token_name=sig_data.token_name,
@@ -175,6 +199,17 @@ async def main() -> None:
                                     conviction=sig_data.conviction_score,
                                     sol=settings.MAX_BUY_SOL,
                                     tokens=tokens,
+                                )
+
+                                # Telegram notification for position open
+                                await send_telegram(
+                                    f"Position Opened\n"
+                                    f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
+                                    f"Conviction: {sig_data.conviction_score:.1f}\n"
+                                    f"SOL: {settings.MAX_BUY_SOL}\n"
+                                    f"Tokens: {tokens:.2f}\n"
+                                    f"TX: {tx_sig}",
+                                    settings,
                                 )
                             except Exception as e:
                                 logger.error(

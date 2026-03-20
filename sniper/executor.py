@@ -1,5 +1,6 @@
 """Trade execution — buy and sell tokens via Jupiter swaps."""
 
+import asyncio
 import uuid
 
 import aiohttp
@@ -127,6 +128,69 @@ async def get_current_value_sol(
     except Exception:
         logger.warning("Price check failed", token=contract_address)
         return None
+
+
+async def execute_buy_split(
+    client: AsyncClient,
+    keypair: Keypair,
+    session: aiohttp.ClientSession,
+    contract_address: str,
+    total_sol: float,
+    settings: Settings,
+    num_splits: int = 3,
+    delay_seconds: int = 10,
+) -> tuple[list[str], float]:
+    """Buy a token with SOL via Jupiter, splitting into multiple smaller orders.
+
+    This reduces price impact by spreading the buy over time.
+
+    Returns:
+        (list_of_tx_signatures, total_tokens_received)
+    """
+    sol_per_split = total_sol / num_splits
+    tx_sigs: list[str] = []
+    total_tokens: float = 0.0
+
+    for i in range(num_splits):
+        logger.info(
+            "Split order",
+            split=f"{i + 1}/{num_splits}",
+            sol=sol_per_split,
+            token=contract_address,
+        )
+        try:
+            tx_sig, tokens = await execute_buy(
+                client, keypair, session, contract_address, sol_per_split, settings,
+            )
+            tx_sigs.append(tx_sig)
+            total_tokens += tokens
+        except Exception as e:
+            logger.error(
+                "Split order failed",
+                split=f"{i + 1}/{num_splits}",
+                token=contract_address,
+                error=str(e),
+            )
+            # Continue with remaining splits even if one fails
+            if not tx_sigs:
+                raise  # Re-raise if the very first split fails
+
+        # Delay between splits (skip after last split)
+        if i < num_splits - 1:
+            await asyncio.sleep(delay_seconds)
+
+    if not tx_sigs:
+        raise ExecutionError("All split orders failed")
+
+    logger.info(
+        "Split buy complete",
+        token=contract_address,
+        total_sol=total_sol,
+        total_tokens=total_tokens,
+        successful_splits=len(tx_sigs),
+        total_splits=num_splits,
+    )
+    return (tx_sigs, total_tokens)
 
 
 async def _sign_and_send(

@@ -21,7 +21,8 @@ async def _create_scout_db(path):
                 ticker TEXT NOT NULL,
                 market_cap_usd REAL DEFAULT 0,
                 liquidity_usd REAL DEFAULT 0,
-                volume_24h_usd REAL DEFAULT 0
+                volume_24h_usd REAL DEFAULT 0,
+                token_age_days REAL DEFAULT 0
             );
             CREATE TABLE alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,16 +34,16 @@ async def _create_scout_db(path):
             );
         """)
         await conn.execute(
-            "INSERT INTO candidates VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("Sol111", "solana", "GoodToken", "GT", 100000, 50000, 20000),
+            "INSERT INTO candidates VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("Sol111", "solana", "GoodToken", "GT", 100000, 50000, 20000, 1),
         )
         await conn.execute(
             "INSERT INTO alerts VALUES (NULL, ?, ?, ?, ?)",
             ("Sol111", "solana", 85.0, "2025-01-01T12:00:00+00:00"),
         )
         await conn.execute(
-            "INSERT INTO candidates VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("Sol222", "solana", "LowConviction", "LC", 50000, 30000, 10000),
+            "INSERT INTO candidates VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("Sol222", "solana", "LowConviction", "LC", 50000, 30000, 10000, 1),
         )
         await conn.execute(
             "INSERT INTO alerts VALUES (NULL, ?, ?, ?, ?)",

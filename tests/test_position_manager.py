@@ -50,8 +50,10 @@ async def test_take_profit_triggers(db, settings):
          patch("sniper.position_manager.execute_sell", new_callable=AsyncMock, return_value=("paper-sell-y", 0.25)):
         actions = await check_positions(db, AsyncMock(), AsyncMock(), AsyncMock(), settings)
 
-    assert len(actions) == 1
-    assert "TAKE_PROFIT" in actions[0]
+    # With 150% gain: partial TP fires first (at 50% threshold), then full TP
+    assert len(actions) == 2
+    assert "PARTIAL_TP" in actions[0]
+    assert "TAKE_PROFIT" in actions[1]
     assert await db.count_open_positions() == 0
 
 

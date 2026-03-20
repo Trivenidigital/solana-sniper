@@ -33,7 +33,8 @@ async def read_new_signals(
                 """
                 SELECT c.contract_address, c.chain, c.token_name, c.ticker,
                        a.conviction_score, c.market_cap_usd, c.liquidity_usd,
-                       c.volume_24h_usd, a.alerted_at
+                       c.volume_24h_usd, a.alerted_at,
+                       COALESCE(c.token_age_days, 0) AS token_age_days
                 FROM alerts a
                 JOIN candidates c ON a.contract_address = c.contract_address
                 WHERE a.chain = 'solana'
@@ -66,10 +67,18 @@ async def filter_actionable(
     Removes signals where:
     - We already have an open position for this token
     - Liquidity is too low
+    - Token is older than MAX_TOKEN_AGE_DAYS
+    - Token is on cooldown after a stop-loss
     """
     actionable: list[Signal] = []
     for signal in signals:
         if signal.liquidity_usd < settings.MIN_LIQUIDITY_USD:
+            continue
+        if signal.token_age_days > settings.MAX_TOKEN_AGE_DAYS:
+            logger.debug("Token too old", token=signal.token_name, age_days=signal.token_age_days)
+            continue
+        if await db.is_on_cooldown(signal.contract_address):
+            logger.debug("Token on cooldown", token=signal.token_name)
             continue
         existing = await db.get_open_position_by_address(signal.contract_address)
         if existing is not None:

@@ -19,6 +19,7 @@ class Database:
         self._conn = await aiosqlite.connect(self._db_path)
         self._conn.row_factory = aiosqlite.Row
         await self._create_tables()
+        await self._migrate_tables()
 
     async def close(self) -> None:
         if self._conn:
@@ -62,8 +63,30 @@ class Database:
                 executed_at   TEXT NOT NULL,
                 FOREIGN KEY (position_id) REFERENCES positions(id)
             );
+
+            CREATE TABLE IF NOT EXISTS cooldowns (
+                contract_address TEXT PRIMARY KEY,
+                cooldown_until   TEXT NOT NULL
+            );
             """
         )
+
+    async def _migrate_tables(self) -> None:
+        """Add columns that may not exist in older databases."""
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        # Attempt to add new columns; ignore errors if they already exist.
+        for col, typedef in [
+            ("peak_value_sol", "REAL"),
+            ("trailing_active", "INTEGER DEFAULT 0"),
+            ("partial_exit_done", "INTEGER DEFAULT 0"),
+        ]:
+            try:
+                await self._conn.execute(
+                    f"ALTER TABLE positions ADD COLUMN {col} {typedef}"
+                )
+            except Exception:
+                pass  # column already exists
 
     # ------------------------------------------------------------------
     # Positions
@@ -180,6 +203,66 @@ class Database:
         await self._conn.commit()
 
     # ------------------------------------------------------------------
+    # Cooldowns
+    # ------------------------------------------------------------------
+
+    async def set_cooldown(self, contract_address: str, hours: int) -> None:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        from datetime import timedelta
+        until = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
+        await self._conn.execute(
+            """INSERT OR REPLACE INTO cooldowns (contract_address, cooldown_until)
+               VALUES (?, ?)""",
+            (contract_address, until),
+        )
+        await self._conn.commit()
+
+    async def is_on_cooldown(self, contract_address: str) -> bool:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        cursor = await self._conn.execute(
+            "SELECT cooldown_until FROM cooldowns WHERE contract_address=?",
+            (contract_address,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return False
+        cooldown_until = datetime.fromisoformat(row[0])
+        return datetime.now(timezone.utc) < cooldown_until
+
+    # ------------------------------------------------------------------
+    # Peak value / trailing / partial exit
+    # ------------------------------------------------------------------
+
+    async def update_peak_value(self, position_id: int, peak_sol: float) -> None:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        await self._conn.execute(
+            "UPDATE positions SET peak_value_sol=? WHERE id=?",
+            (peak_sol, position_id),
+        )
+        await self._conn.commit()
+
+    async def set_trailing_active(self, position_id: int) -> None:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        await self._conn.execute(
+            "UPDATE positions SET trailing_active=1 WHERE id=?",
+            (position_id,),
+        )
+        await self._conn.commit()
+
+    async def mark_partial_exit(self, position_id: int, remaining_tokens: float) -> None:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        await self._conn.execute(
+            "UPDATE positions SET partial_exit_done=1, entry_token_amount=? WHERE id=?",
+            (remaining_tokens, position_id),
+        )
+        await self._conn.commit()
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
@@ -187,6 +270,8 @@ class Database:
     def _row_to_position(row: aiosqlite.Row) -> Position:
         d = dict(row)
         d["paper"] = bool(d.get("paper", 1))
+        d["trailing_active"] = bool(d.get("trailing_active", 0))
+        d["partial_exit_done"] = bool(d.get("partial_exit_done", 0))
         if d.get("opened_at"):
             d["opened_at"] = datetime.fromisoformat(d["opened_at"])
         if d.get("closed_at"):
