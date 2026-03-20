@@ -114,12 +114,33 @@ async def get_current_value_sol(
     token_amount: int,
     settings: Settings,
 ) -> float | None:
-    """Get current SOL value of a token position via Jupiter quote.
+    """Get current SOL value of a token position.
 
-    Returns None if quote fails (token may be delisted/illiquid).
+    Uses DexScreener (free, no rate limit) as primary price source.
+    Falls back to Jupiter quote if DexScreener fails.
+    Returns None if both fail.
     """
     if token_amount <= 0:
         return 0.0
+
+    # Primary: DexScreener (no rate limit)
+    try:
+        url = f"https://api.dexscreener.com/tokens/v1/solana/{contract_address}"
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status == 200:
+                pairs = await resp.json()
+                if pairs and isinstance(pairs, list) and len(pairs) > 0:
+                    pair = pairs[0]
+                    price_native = pair.get("priceNative")
+                    if price_native:
+                        price_sol = float(price_native)
+                        decimals = 6 if contract_address.endswith("pump") else 9
+                        human_tokens = token_amount / (10 ** decimals)
+                        return human_tokens * price_sol
+    except Exception:
+        pass
+
+    # Fallback: Jupiter quote
     try:
         quote = await get_quote(
             session, contract_address, SOL_MINT, token_amount, settings,
