@@ -10,6 +10,7 @@ import structlog
 from solana.rpc.async_api import AsyncClient
 
 from sniper.config import Settings
+from sniper.dashboard import print_dashboard
 from sniper.db import Database
 from sniper.executor import execute_buy
 from sniper.models import Position
@@ -20,10 +21,25 @@ from sniper.wallet import get_sol_balance, load_keypair
 logger = structlog.get_logger()
 
 
+async def _dashboard_task(db: Database, interval: int, shutdown: asyncio.Event) -> None:
+    """Background task that prints dashboard periodically."""
+    while not shutdown.is_set():
+        try:
+            await print_dashboard(db)
+        except Exception as e:
+            logger.error("Dashboard error", error=str(e))
+        try:
+            await asyncio.wait_for(shutdown.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Solana Sniper trading bot")
     parser.add_argument("--live", action="store_true", help="Enable live trading (default: paper)")
     parser.add_argument("--cycles", type=int, default=0, help="Number of cycles (0=infinite)")
+    parser.add_argument("--dashboard-interval", type=int, default=60,
+                        help="Dashboard log interval in seconds (default: 60)")
     args = parser.parse_args()
 
     structlog.configure(
@@ -90,6 +106,11 @@ async def main() -> None:
 
     last_signal_check = datetime.min.replace(tzinfo=timezone.utc)
     cycle_count = 0
+
+    # Start background dashboard
+    dash_task = asyncio.create_task(
+        _dashboard_task(db, args.dashboard_interval, shutdown_event)
+    )
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -188,11 +209,21 @@ async def main() -> None:
                     pass
 
     finally:
+        shutdown_event.set()
+        dash_task.cancel()
+        try:
+            await dash_task
+        except asyncio.CancelledError:
+            pass
         await db.close()
         await rpc_client.close()
-        await portfolio_summary(db) if db._conn else None
         logger.info("Sniper stopped", cycles_completed=cycle_count)
 
 
-if __name__ == "__main__":
+def _cli() -> None:
+    """CLI entry point for `solana-sniper` command."""
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    _cli()
