@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     MIN_LIQUIDITY_USD: float = 15000.0
 
     # Jupiter
-    JUPITER_API_URL: str = "https://quote-api.jup.ag/v6"
+    JUPITER_API_URL: str = "https://lite-api.jup.ag/swap/v1"
     SLIPPAGE_BPS: int = 300
     JUPITER_TIMEOUT_SEC: int = 30
 

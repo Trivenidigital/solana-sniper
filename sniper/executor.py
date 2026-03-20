@@ -7,6 +7,7 @@ import structlog
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Confirmed
 from solders.keypair import Keypair
+from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 
 from sniper.config import Settings
@@ -137,9 +138,10 @@ async def _sign_and_send(
         txn = VersionedTransaction(txn.message, [keypair])
 
         resp = await client.send_transaction(txn)
-        sig = str(resp.value)
+        sig = resp.value
+        sig_str = str(sig)
 
-        await client.confirm_transaction(sig, commitment=Confirmed)
-        return sig
+        await client.confirm_transaction(Signature.from_string(sig_str), commitment=Confirmed)
+        return sig_str
     except Exception as e:
         raise TransactionFailedError(f"Transaction failed: {e}") from e
