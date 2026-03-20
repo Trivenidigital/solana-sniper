@@ -14,6 +14,7 @@ from sniper.dashboard import print_dashboard
 from sniper.db import Database
 from sniper.executor import execute_buy, execute_buy_split
 from sniper.models import Position
+from sniper.multi_wallet import copy_buy, load_wallets, get_all_balances
 from sniper.position_manager import check_positions, portfolio_summary
 from sniper.safety import check_token_safety
 from sniper.signal_reader import filter_actionable, read_new_signals
@@ -59,13 +60,28 @@ async def main() -> None:
     if args.live:
         settings.PAPER_MODE = False
 
-    # Load or generate wallet
+    # Load wallets
     keypair = load_keypair(settings.KEYPAIR_PATH)
     pubkey = keypair.pubkey()
+
+    # Multi-wallet setup
+    wallets = []
+    if settings.MULTI_WALLET_ENABLED and settings.WALLET_PATHS:
+        wallet_paths = [p.strip() for p in settings.WALLET_PATHS.split(",") if p.strip()]
+        wallets = load_wallets(wallet_paths)
+        logger.info(
+            "Multi-wallet mode",
+            wallets_loaded=len(wallets),
+            pubkeys=[str(w.pubkey()) for w in wallets],
+        )
+    else:
+        wallets = [keypair]
 
     logger.info(
         "Sniper starting",
         wallet=str(pubkey),
+        multi_wallet=settings.MULTI_WALLET_ENABLED,
+        wallet_count=len(wallets),
         paper_mode=settings.PAPER_MODE,
         max_buy_sol=settings.MAX_BUY_SOL,
         max_portfolio_sol=settings.MAX_PORTFOLIO_SOL,
@@ -160,57 +176,111 @@ async def main() -> None:
                                 )
                                 continue
 
-                            # Execute buy
+                            # Execute buy (single or multi-wallet)
                             try:
-                                if settings.SPLIT_ORDERS:
-                                    tx_sigs, tokens = await execute_buy_split(
-                                        rpc_client, keypair, session,
-                                        sig_data.contract_address,
-                                        settings.MAX_BUY_SOL,
-                                        settings,
-                                        num_splits=settings.SPLIT_COUNT,
-                                        delay_seconds=settings.SPLIT_DELAY_SECONDS,
-                                    )
-                                    tx_sig = tx_sigs[0]  # Use first tx as entry reference
-                                else:
-                                    tx_sig, tokens = await execute_buy(
-                                        rpc_client, keypair, session,
+                                if settings.MULTI_WALLET_ENABLED and len(wallets) > 1:
+                                    # Copy trade across all wallets
+                                    results = await copy_buy(
+                                        rpc_client, wallets, session,
                                         sig_data.contract_address,
                                         settings.MAX_BUY_SOL,
                                         settings,
                                     )
-                                pos = Position(
-                                    contract_address=sig_data.contract_address,
-                                    token_name=sig_data.token_name,
-                                    ticker=sig_data.ticker,
-                                    entry_sol=settings.MAX_BUY_SOL,
-                                    entry_token_amount=tokens,
-                                    entry_price_usd=sig_data.market_cap_usd,
-                                    entry_tx=tx_sig,
-                                    paper=settings.PAPER_MODE,
-                                )
-                                pos_id = await db.open_position(pos)
-                                await db.log_trade(
-                                    pos_id, "buy", settings.MAX_BUY_SOL, tokens, tx_sig, None,
-                                )
-                                logger.info(
-                                    "Position opened",
-                                    token=sig_data.token_name,
-                                    conviction=sig_data.conviction_score,
-                                    sol=settings.MAX_BUY_SOL,
-                                    tokens=tokens,
-                                )
+                                    # Log a position for each successful wallet
+                                    succeeded = [r for r in results if r["success"]]
+                                    if not succeeded:
+                                        logger.error("All wallet buys failed", token=sig_data.token_name)
+                                        continue
 
-                                # Telegram notification for position open
-                                await send_telegram(
-                                    f"Position Opened\n"
-                                    f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
-                                    f"Conviction: {sig_data.conviction_score:.1f}\n"
-                                    f"SOL: {settings.MAX_BUY_SOL}\n"
-                                    f"Tokens: {tokens:.2f}\n"
-                                    f"TX: {tx_sig}",
-                                    settings,
-                                )
+                                    for r in succeeded:
+                                        pos = Position(
+                                            contract_address=sig_data.contract_address,
+                                            token_name=sig_data.token_name,
+                                            ticker=sig_data.ticker,
+                                            entry_sol=settings.MAX_BUY_SOL,
+                                            entry_token_amount=r["tokens"],
+                                            entry_price_usd=sig_data.market_cap_usd,
+                                            entry_tx=r["tx"],
+                                            paper=settings.PAPER_MODE,
+                                        )
+                                        pos_id = await db.open_position(pos)
+                                        await db.log_trade(
+                                            pos_id, "buy", settings.MAX_BUY_SOL, r["tokens"], r["tx"], None,
+                                        )
+
+                                    tx_sig = succeeded[0]["tx"]
+                                    total_tokens = sum(r["tokens"] for r in succeeded)
+                                    total_sol = settings.MAX_BUY_SOL * len(succeeded)
+
+                                    logger.info(
+                                        "Copy trade opened",
+                                        token=sig_data.token_name,
+                                        wallets_succeeded=len(succeeded),
+                                        wallets_total=len(wallets),
+                                        total_sol=total_sol,
+                                        total_tokens=total_tokens,
+                                    )
+
+                                    await send_telegram(
+                                        f"Copy Trade Opened\n"
+                                        f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
+                                        f"Conviction: {sig_data.conviction_score:.1f}\n"
+                                        f"Wallets: {len(succeeded)}/{len(wallets)}\n"
+                                        f"Total SOL: {total_sol}\n"
+                                        f"Total Tokens: {total_tokens:.2f}",
+                                        settings,
+                                    )
+
+                                else:
+                                    # Single wallet buy
+                                    if settings.SPLIT_ORDERS:
+                                        tx_sigs, tokens = await execute_buy_split(
+                                            rpc_client, keypair, session,
+                                            sig_data.contract_address,
+                                            settings.MAX_BUY_SOL,
+                                            settings,
+                                            num_splits=settings.SPLIT_COUNT,
+                                            delay_seconds=settings.SPLIT_DELAY_SECONDS,
+                                        )
+                                        tx_sig = tx_sigs[0]
+                                    else:
+                                        tx_sig, tokens = await execute_buy(
+                                            rpc_client, keypair, session,
+                                            sig_data.contract_address,
+                                            settings.MAX_BUY_SOL,
+                                            settings,
+                                        )
+                                    pos = Position(
+                                        contract_address=sig_data.contract_address,
+                                        token_name=sig_data.token_name,
+                                        ticker=sig_data.ticker,
+                                        entry_sol=settings.MAX_BUY_SOL,
+                                        entry_token_amount=tokens,
+                                        entry_price_usd=sig_data.market_cap_usd,
+                                        entry_tx=tx_sig,
+                                        paper=settings.PAPER_MODE,
+                                    )
+                                    pos_id = await db.open_position(pos)
+                                    await db.log_trade(
+                                        pos_id, "buy", settings.MAX_BUY_SOL, tokens, tx_sig, None,
+                                    )
+                                    logger.info(
+                                        "Position opened",
+                                        token=sig_data.token_name,
+                                        conviction=sig_data.conviction_score,
+                                        sol=settings.MAX_BUY_SOL,
+                                        tokens=tokens,
+                                    )
+                                    await send_telegram(
+                                        f"Position Opened\n"
+                                        f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
+                                        f"Conviction: {sig_data.conviction_score:.1f}\n"
+                                        f"SOL: {settings.MAX_BUY_SOL}\n"
+                                        f"Tokens: {tokens:.2f}\n"
+                                        f"TX: {tx_sig}",
+                                        settings,
+                                    )
+
                             except Exception as e:
                                 logger.error(
                                     "Buy failed",

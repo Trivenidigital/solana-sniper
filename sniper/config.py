@@ -16,8 +16,10 @@ class Settings(BaseSettings):
     SOLANA_RPC_URL: str = "https://api.mainnet-beta.solana.com"
     SOLANA_WS_URL: str = "wss://api.mainnet-beta.solana.com"
 
-    # Wallet
+    # Wallet (single or multi)
     KEYPAIR_PATH: Path = Path("wallet.json")
+    MULTI_WALLET_ENABLED: bool = False
+    WALLET_PATHS: str = ""  # Comma-separated: "wallet1.json,wallet2.json,wallet3.json"
 
     # Scout DB (read-only)
     SCOUT_DB_PATH: Path = Path("../coinpump-scout/scout.db")
