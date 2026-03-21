@@ -1,6 +1,7 @@
 """Position monitoring — time-based phase exits with trailing tiers."""
 
 import asyncio
+import math
 from datetime import datetime, timezone
 
 import aiohttp
@@ -10,35 +11,47 @@ from solders.keypair import Keypair
 
 from sniper.config import Settings
 from sniper.db import Database
-from sniper.executor import execute_sell, get_current_value_sol
+from sniper.executor import execute_buy, execute_sell
 from sniper.telegram_notify import send_telegram
 
 logger = structlog.get_logger()
 
+# Track consecutive sell failures per position to force-close unsellable tokens
+_sell_fail_counts: dict[str, int] = {}
 
-async def _get_sell_pressure(session: aiohttp.ClientSession, contract_address: str) -> float | None:
-    """Fetch the 5-minute sell ratio from DexScreener.
 
-    Returns sell_ratio = sells / (buys + sells), or None on failure.
+async def _fetch_position_data(
+    session: aiohttp.ClientSession, contract_address: str, token_amount: int,
+) -> tuple[float | None, float | None, float]:
+    """Fetch price, mcap, and sell ratio from DexScreener in one call.
+
+    Returns (value_sol, sell_ratio, market_cap).
     """
     try:
         url = f"https://api.dexscreener.com/tokens/v1/solana/{contract_address}"
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             if resp.status != 200:
-                return None
+                return None, None, 0
             pairs = await resp.json()
-            if not pairs or not isinstance(pairs, list) or len(pairs) == 0:
-                return None
+            if not pairs or not isinstance(pairs, list):
+                return None, None, 0
             pair = pairs[0]
+            # Price
+            price_native = pair.get("priceNative")
+            value_sol = None
+            if price_native:
+                decimals = 6 if contract_address.endswith("pump") else 9
+                human_tokens = token_amount / (10 ** decimals)
+                value_sol = human_tokens * float(price_native)
+            # Sell ratio
             txns = pair.get("txns", {}).get("m5", {})
             buys = txns.get("buys", 0)
             sells = txns.get("sells", 0)
             total = buys + sells
-            if total == 0:
-                return None
-            return sells / total
+            sell_ratio = sells / total if total > 0 else None
+            return value_sol, sell_ratio, float(pair.get("marketCap") or 0)
     except Exception:
-        return None
+        return None, None, 0
 
 
 async def check_positions(
@@ -67,25 +80,45 @@ async def check_positions(
 
     actions: list[str] = []
 
-    # Batch price check: fetch all position values in parallel
-    value_tasks = [
-        get_current_value_sol(
-            session, pos.contract_address, int(pos.entry_token_amount), settings,
-        )
+    # Batch price + sell-pressure check: single DexScreener call per position
+    data_tasks = [
+        _fetch_position_data(session, pos.contract_address, int(pos.entry_token_amount))
         for pos in positions
     ]
-    current_values = await asyncio.gather(*value_tasks, return_exceptions=True)
+    position_data = await asyncio.gather(*data_tasks, return_exceptions=True)
 
-    for pos, current_value in zip(positions, current_values):
+    for pos, pos_data in zip(positions, position_data):
         # Handle exceptions from gather
-        if isinstance(current_value, Exception):
-            logger.warning("Price check raised exception", token=pos.token_name, error=str(current_value))
+        if isinstance(pos_data, Exception):
+            logger.warning("Price check raised exception", token=pos.token_name, error=str(pos_data))
             continue
+        current_value, sell_ratio, _mcap = pos_data
         if current_value is None:
             continue
 
         pnl_pct = ((current_value - pos.entry_sol) / pos.entry_sol) * 100
         age_minutes = (datetime.now(timezone.utc) - pos.opened_at).total_seconds() / 60
+
+        # Dynamic phase timing: scale by liquidity
+        # Reference: $50K mcap = 1.0x (standard phases)
+        # $12.5K mcap = 0.5x (half the time), $200K mcap = 2.0x (double)
+        liq = pos.entry_price_usd or 50000  # Use entry mcap as proxy for liq
+        liq_factor = max(0.5, min(2.0, math.sqrt(liq / 50000)))
+
+        protection_end = settings.PROTECTION_WINDOW_MIN * liq_factor
+        momentum_end = settings.MOMENTUM_CHECK_MIN * liq_factor
+        max_hold = settings.MAX_HOLD_MIN * liq_factor
+
+        # --- Profit-taking ladder (independent of trailing) ---
+        if (settings.PROFIT_LADDER_ENABLED
+                and pnl_pct >= settings.PROFIT_LADDER_PCT
+                and not pos.partial_exit_done
+                and pos.partial_exit_tier < 1
+                and pos.id is not None):
+            await _partial_sell(
+                db, client, keypair, session, settings,
+                pos, 0.25, pnl_pct, actions, tier=1,
+            )
 
         # --- Trailing stop management (runs BEFORE phase checks) ---
         if pos.trailing_active and pos.id is not None:
@@ -136,10 +169,28 @@ async def check_positions(
                     actions.append(action)
                     continue
 
+        # --- Break-even stop: once we've been up 30%+, never let it go negative ---
+        if pos.peak_value_sol and pos.peak_value_sol > pos.entry_sol * 1.3:
+            if pnl_pct < 0 and pos.id is not None:
+                logger.info(
+                    "Break-even stop triggered",
+                    token=pos.token_name,
+                    pnl_pct=f"{pnl_pct:.1f}%",
+                    peak_value=f"{pos.peak_value_sol:.4f}",
+                )
+                action = await _close_position(
+                    db, client, keypair, session, settings,
+                    pos.id, pos.contract_address, pos.token_name,
+                    int(pos.entry_token_amount), pos.entry_sol,
+                    current_value, pnl_pct, "breakeven_stop",
+                )
+                actions.append(action)
+                continue
+
         # --- Phase-based exit logic ---
 
-        # Phase 1: Protection (0-10 min)
-        if age_minutes <= settings.PROTECTION_WINDOW_MIN:
+        # Phase 1: Protection (0-{protection_end} min)
+        if age_minutes <= protection_end:
             if pnl_pct <= -settings.RUG_DETECT_PCT:
                 logger.warning(
                     "Rug detected in protection phase",
@@ -164,8 +215,8 @@ async def check_positions(
                     age_minutes=f"{age_minutes:.1f}",
                 )
 
-        # Phase 2: Momentum (10-30 min)
-        elif age_minutes <= settings.MOMENTUM_CHECK_MIN:
+        # Phase 2: Momentum ({protection_end}-{momentum_end} min)
+        elif age_minutes <= momentum_end:
             if pnl_pct <= -settings.MOMENTUM_LOSS_PCT:
                 logger.info(
                     "Momentum lost in phase 2",
@@ -196,8 +247,31 @@ async def check_positions(
                     age_minutes=f"{age_minutes:.1f}",
                 )
 
-        # Phase 3: Pump window (30-60 min)
-        elif age_minutes <= settings.MAX_HOLD_MIN:
+            # DCA: if high-conviction token dips 15-25% but sell pressure is normal, buy more
+            if settings.DCA_ENABLED and pnl_pct < -15 and pnl_pct > -25:
+                sell_ratio = await _get_sell_pressure(session, pos.contract_address)
+                if sell_ratio is not None and sell_ratio < 0.5:
+                    # Only DCA once per position (reuse partial_exit_done flag)
+                    if not pos.partial_exit_done:
+                        logger.info("DCA opportunity", token=pos.token_name, pnl=f"{pnl_pct:.1f}%")
+                        try:
+                            dca_amount = pos.entry_sol * 0.5  # Buy half the original size
+                            tx_sig, tokens = await execute_buy(
+                                client, keypair, session, pos.contract_address, dca_amount, settings,
+                            )
+                            # Update position with new tokens and adjusted entry
+                            new_tokens = pos.entry_token_amount + tokens
+                            new_entry = pos.entry_sol + dca_amount
+                            await db.update_partial_exit(pos.id, new_entry, new_tokens, 0)
+                            pos.entry_sol = new_entry
+                            pos.entry_token_amount = new_tokens
+                            pos.partial_exit_done = True
+                            actions.append(f"DCA: {pos.token_name} added {dca_amount} SOL")
+                        except Exception as e:
+                            logger.warning("DCA buy failed", token=pos.token_name, error=str(e))
+
+        # Phase 3: Pump window ({momentum_end}-{max_hold} min)
+        elif age_minutes <= max_hold:
             if not pos.trailing_active and pnl_pct < settings.PUMP_WINDOW_MIN_GAIN_PCT:
                 logger.info(
                     "Pump window expired in phase 3",
@@ -249,8 +323,7 @@ async def check_positions(
                 actions.append(action)
                 continue
 
-        # --- Sell pressure check (after phase logic) ---
-        sell_ratio = await _get_sell_pressure(session, pos.contract_address)
+        # --- Sell pressure check (using data from batch fetch) ---
         if sell_ratio is not None:
             logger.debug(
                 "Sell pressure",
@@ -388,6 +461,46 @@ async def _close_position(
         return action
     except Exception as e:
         logger.error(f"Failed to close position ({reason})", token=token_name, error=str(e))
+
+        # Track sell failures — force close in DB after 3 failed attempts
+        # to prevent dead positions from blocking new trades
+        fail_key = f"sell_fail_{position_id}"
+        _sell_fail_counts[fail_key] = _sell_fail_counts.get(fail_key, 0) + 1
+
+        if _sell_fail_counts[fail_key] >= 5:
+            # Only force-close if position is actually worthless (< 5% of entry)
+            # Don't kill profitable positions just because Jupiter routing fails
+            if current_value is not None and current_value > entry_sol * 0.05:
+                logger.warning(
+                    "Sell failed 5x but position still has value — keeping open",
+                    token=token_name, value_sol=current_value, entry_sol=entry_sol,
+                )
+                _sell_fail_counts[fail_key] = 0  # Reset counter, try again later
+                return f"RETRY {reason}: {token_name} (still has value {current_value:.4f} SOL)"
+
+            logger.warning(
+                "Force-closing worthless position after 5 failed sell attempts",
+                token=token_name, reason=reason,
+            )
+            await db.close_position(
+                position_id=position_id,
+                exit_sol=0,
+                exit_price_usd=0,
+                exit_tx=None,
+                exit_reason="unsellable",
+                pnl_sol=-entry_sol,
+                pnl_pct=-100,
+            )
+            await send_telegram(
+                f"Position Force-Closed (unsellable)\n"
+                f"Token: {token_name}\n"
+                f"Reason: 5 failed sell attempts, value < 5% of entry\n"
+                f"Loss: -{entry_sol:.4f} SOL",
+                settings,
+            )
+            del _sell_fail_counts[fail_key]
+            return f"FORCE_CLOSED unsellable: {token_name} (-{entry_sol:.4f} SOL)"
+
         return f"FAILED {reason}: {token_name} — {e}"
 
 

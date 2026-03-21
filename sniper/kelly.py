@@ -42,12 +42,19 @@ async def calculate_kelly_bet(
 
     win_count = len(wins)
     loss_count = len(losses)
+
+    # Override win rate if manually set (from GMGN actual data)
+    if settings.KELLY_WIN_RATE_OVERRIDE > 0:
+        win_rate_override = settings.KELLY_WIN_RATE_OVERRIDE / 100.0
+        logger.info("Kelly: using manual win rate override", override=f"{win_rate_override:.1%}")
+    else:
+        win_rate_override = None
     total = win_count + loss_count
 
     if total == 0:
         return settings.MAX_BUY_SOL
 
-    win_rate = win_count / total
+    win_rate = win_rate_override if win_rate_override else win_count / total
 
     avg_win = sum(p["pnl_sol"] for p in wins) / win_count if win_count > 0 else 0
     avg_loss = abs(sum(p["pnl_sol"] for p in losses) / loss_count) if loss_count > 0 else 0.01

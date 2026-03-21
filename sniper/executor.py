@@ -23,6 +23,40 @@ from sniper.jupiter import (
 
 logger = structlog.get_logger()
 
+# --- RPC Failover ---
+_rpc_clients: list[AsyncClient] = []
+
+
+async def _get_healthy_client(settings: Settings) -> AsyncClient:
+    """Get a healthy RPC client, falling back to alternatives."""
+    if not _rpc_clients:
+        urls = [settings.SOLANA_RPC_URL]
+        if settings.SOLANA_RPC_URLS:
+            urls.extend(u.strip() for u in settings.SOLANA_RPC_URLS.split(",") if u.strip())
+        for url in urls:
+            _rpc_clients.append(AsyncClient(url))
+
+    for rpc_client in _rpc_clients:
+        try:
+            await asyncio.wait_for(rpc_client.get_health(), timeout=3)
+            return rpc_client
+        except Exception:
+            continue
+    return _rpc_clients[0]  # Fallback to primary
+
+
+async def _get_actual_token_balance(client: AsyncClient, owner_pubkey, mint_address: str) -> int:
+    """Get actual on-chain token balance for a mint."""
+    from solana.rpc.types import TokenAccountOpts
+    from solders.pubkey import Pubkey
+    resp = await client.get_token_accounts_by_owner_json_parsed(
+        owner_pubkey, TokenAccountOpts(mint=Pubkey.from_string(mint_address)),
+    )
+    if resp.value:
+        return int(resp.value[0].account.data.parsed["info"]["tokenAmount"]["amount"])
+    return 0
+
+
 # Module-level LRU cache for token decimals (contract_address -> decimals)
 _decimals_cache: OrderedDict[str, int] = OrderedDict()
 _DECIMALS_CACHE_MAX = 500
@@ -96,7 +130,26 @@ async def execute_buy(
     )
     tx_sig = await _sign_and_send(client, keypair, tx_bytes)
     logger.info("BUY executed", tx=tx_sig, token=contract_address, sol=sol_amount)
+
+    # Verify transaction succeeded on-chain
+    await asyncio.sleep(2)  # Wait for confirmation
+    try:
+        tx_resp = await client.get_transaction(
+            Signature.from_string(tx_sig),
+            max_supported_transaction_version=0,
+        )
+        if tx_resp.value and tx_resp.value.transaction.meta.err:
+            raise TransactionFailedError(f"Transaction landed but swap failed: {tx_sig}")
+    except Exception as verify_err:
+        if "swap failed" in str(verify_err):
+            raise
+        # Verification failed but tx might still be ok — log warning
+        logger.warning("Could not verify transaction", tx=tx_sig, error=str(verify_err))
+
     return (tx_sig, tokens_received)
+
+
+_SELL_SLIPPAGE_TIERS = [500, 1000, 1500, 2500]  # 5%, 10%, 15%, 25%
 
 
 async def execute_sell(
@@ -107,37 +160,71 @@ async def execute_sell(
     token_amount: int,
     settings: Settings,
 ) -> tuple[str, float]:
-    """Sell a token for SOL via Jupiter.
+    """Sell a token for SOL via Jupiter with auto-retry on increasing slippage.
+
+    Tries at 5% → 10% → 15% → 25% slippage before giving up.
 
     Returns:
         (tx_signature, sol_received)
     """
-    # Get quote: token -> SOL
-    quote = await get_quote(
-        session, contract_address, SOL_MINT, token_amount, settings,
-    )
-    sol_received = float(quote.out_amount) / LAMPORTS_PER_SOL
+    # On-chain balance check before sell (skip in paper mode)
+    if not settings.PAPER_MODE:
+        actual_balance = await _get_actual_token_balance(client, keypair.pubkey(), contract_address)
+        if actual_balance <= 0:
+            raise ExecutionError(f"No tokens to sell — on-chain balance is 0")
+        if actual_balance < token_amount:
+            logger.warning("Adjusting sell amount to actual balance", requested=token_amount, actual=actual_balance)
+            token_amount = actual_balance
 
-    logger.info(
-        "Sell quote received",
-        token=contract_address,
-        tokens_in=token_amount,
-        sol_out=sol_received,
-        price_impact=f"{quote.price_impact_pct:.2f}%",
-        paper=settings.PAPER_MODE,
-    )
+    for attempt, slippage_bps in enumerate(_SELL_SLIPPAGE_TIERS):
+        try:
+            # Override slippage for this attempt
+            sell_settings = settings.model_copy(update={"SLIPPAGE_BPS": slippage_bps})
 
-    if settings.PAPER_MODE:
-        tx_sig = f"paper-sell-{uuid.uuid4().hex[:12]}"
-        logger.info("PAPER SELL executed", tx=tx_sig, token=contract_address, sol=sol_received)
-        return (tx_sig, sol_received)
+            quote = await get_quote(
+                session, contract_address, SOL_MINT, token_amount, sell_settings,
+            )
+            sol_received = float(quote.out_amount) / LAMPORTS_PER_SOL
 
-    tx_bytes = await get_swap_transaction(
-        session, quote, str(keypair.pubkey()), settings,
-    )
-    tx_sig = await _sign_and_send(client, keypair, tx_bytes)
-    logger.info("SELL executed", tx=tx_sig, token=contract_address, sol=sol_received)
-    return (tx_sig, sol_received)
+            logger.info(
+                "Sell quote received",
+                token=contract_address,
+                tokens_in=token_amount,
+                sol_out=sol_received,
+                price_impact=f"{quote.price_impact_pct:.2f}%",
+                slippage_bps=slippage_bps,
+                attempt=attempt + 1,
+                paper=settings.PAPER_MODE,
+            )
+
+            if settings.PAPER_MODE:
+                tx_sig = f"paper-sell-{uuid.uuid4().hex[:12]}"
+                logger.info("PAPER SELL executed", tx=tx_sig, token=contract_address, sol=sol_received)
+                return (tx_sig, sol_received)
+
+            tx_bytes = await get_swap_transaction(
+                session, quote, str(keypair.pubkey()), sell_settings,
+            )
+            tx_sig = await _sign_and_send(client, keypair, tx_bytes)
+            logger.info("SELL executed", tx=tx_sig, token=contract_address, sol=sol_received,
+                        slippage_bps=slippage_bps, attempt=attempt + 1)
+            return (tx_sig, sol_received)
+
+        except Exception as e:
+            error_str = str(e)
+            is_slippage = "0x1788" in error_str or "0x1789" in error_str or "SlippageToleranceExceeded" in error_str
+            if is_slippage and attempt < len(_SELL_SLIPPAGE_TIERS) - 1:
+                logger.warning(
+                    "Sell failed on slippage, retrying with higher tolerance",
+                    token=contract_address,
+                    slippage_bps=slippage_bps,
+                    next_slippage_bps=_SELL_SLIPPAGE_TIERS[attempt + 1],
+                    attempt=attempt + 1,
+                )
+                await asyncio.sleep(1)
+                continue
+            else:
+                raise  # Non-slippage error or last attempt — propagate
 
 
 async def get_current_value_sol(

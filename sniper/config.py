@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     # Solana RPC
     SOLANA_RPC_URL: str = "https://api.mainnet-beta.solana.com"
+    SOLANA_RPC_URLS: str = ""  # Comma-separated fallback RPCs
     SOLANA_WS_URL: str = "wss://api.mainnet-beta.solana.com"
 
     # Wallet (single or multi)
@@ -94,6 +95,10 @@ class Settings(BaseSettings):
     SPLIT_COUNT: int = 3
     SPLIT_DELAY_SECONDS: int = 10
 
+    # Profit-taking ladder
+    PROFIT_LADDER_ENABLED: bool = True
+    PROFIT_LADDER_PCT: float = 50.0
+
     # Sell pressure monitoring
     SELL_PRESSURE_THRESHOLD: float = 0.70
 
@@ -106,9 +111,13 @@ class Settings(BaseSettings):
     KELLY_MIN_TRADES: int = 5      # Minimum trades before Kelly activates
     KELLY_MIN_BET: float = 0.05    # Floor (SOL)
     KELLY_MAX_BET: float = 0.3     # Ceiling (SOL)
+    KELLY_WIN_RATE_OVERRIDE: float = 0  # Manual override from GMGN (0 = use DB)
 
     # Trading dead hours (skip signals during these UTC hours)
     TRADING_DEAD_HOURS: str = "2,3,4,5,6"
+
+    # DCA on dip (risky — disabled by default)
+    DCA_ENABLED: bool = False
 
     # Telegram notifications
     TELEGRAM_BOT_TOKEN: str = ""

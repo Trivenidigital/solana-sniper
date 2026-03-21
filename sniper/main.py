@@ -159,18 +159,25 @@ async def main() -> None:
                             bal = await get_sol_balance(rpc_client, pubkey) if not settings.PAPER_MODE else 1.0
                             kelly_bet = await calculate_kelly_bet(db, bal, settings)
 
+                            # Conviction-weighted sizing
+                            conviction = sig_data.conviction_score or 30
+                            conviction_factor = 0.5 + 0.5 * (conviction / 100)
+                            kelly_bet_adj = kelly_bet * conviction_factor
+
                             if settings.LIQUIDITY_SIZING_ENABLED:
                                 liq = sig_data.liquidity_usd or 5000
                                 size_ratio = min(1.0, liq / 20000)
-                                buy_amount = max(settings.KELLY_MIN_BET, kelly_bet * size_ratio)
+                                buy_amount = max(settings.KELLY_MIN_BET, kelly_bet_adj * size_ratio)
                             else:
-                                buy_amount = kelly_bet
+                                buy_amount = kelly_bet_adj
 
                             buy_amount = min(buy_amount, settings.KELLY_MAX_BET)
                             logger.info(
                                 "Position sizing",
                                 token=sig_data.token_name,
                                 kelly_bet=f"{kelly_bet:.4f}",
+                                conviction=f"{conviction:.0f}",
+                                conviction_factor=f"{conviction_factor:.2f}",
                                 buy_amount=f"{buy_amount:.4f}",
                             )
 
@@ -231,7 +238,7 @@ async def main() -> None:
                                             ticker=sig_data.ticker,
                                             entry_sol=buy_amount,
                                             entry_token_amount=r["tokens"],
-                                            entry_price_usd=sig_data.market_cap_usd,
+                                            entry_price_usd=0,  # Will be updated with actual price from DexScreener
                                             entry_tx=r["tx"],
                                             paper=settings.PAPER_MODE,
                                         )
@@ -303,7 +310,7 @@ async def main() -> None:
                                         ticker=sig_data.ticker,
                                         entry_sol=buy_amount,
                                         entry_token_amount=tokens,
-                                        entry_price_usd=sig_data.market_cap_usd,
+                                        entry_price_usd=0,  # Will be updated with actual price from DexScreener
                                         entry_tx=tx_sig,
                                         paper=settings.PAPER_MODE,
                                     )

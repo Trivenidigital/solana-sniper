@@ -41,7 +41,7 @@ class Position(BaseModel):
     exit_reason: Literal[
         "stop_loss", "take_profit", "trailing_stop", "manual",
         "rug_detected", "momentum_lost", "pump_window_expired", "max_hold_exceeded",
-        "sell_pressure",
+        "sell_pressure", "unsellable", "breakeven_stop",
     ] | None = None
     status: Literal["open", "closed"] = "open"
     pnl_sol: float | None = None
