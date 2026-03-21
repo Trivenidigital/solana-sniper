@@ -112,12 +112,17 @@ class Settings(BaseSettings):
     KELLY_MIN_BET: float = 0.05    # Floor (SOL)
     KELLY_MAX_BET: float = 0.3     # Ceiling (SOL)
     KELLY_WIN_RATE_OVERRIDE: float = 0  # Manual override from GMGN (0 = use DB)
+    KELLY_PAYOFF_OVERRIDE: float = 0   # Manual override for avg_win/avg_loss ratio (0 = use DB)
 
     # Trading dead hours (skip signals during these UTC hours)
     TRADING_DEAD_HOURS: str = "2,3,4,5,6"
 
     # DCA on dip (risky — disabled by default)
     DCA_ENABLED: bool = False
+
+    # Jito MEV Protection
+    JITO_ENABLED: bool = False  # Enable for MEV-protected transactions
+    JITO_TIP_LAMPORTS: int = 10000  # Tip for Jito validators (0.00001 SOL)
 
     # Telegram notifications
     TELEGRAM_BOT_TOKEN: str = ""

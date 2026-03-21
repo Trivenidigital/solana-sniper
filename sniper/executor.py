@@ -93,6 +93,9 @@ async def _get_token_decimals(contract_address: str, session: aiohttp.ClientSess
         return 6 if contract_address.endswith("pump") else 9
 
 
+_BUY_SLIPPAGE_TIERS = [500, 1000, 1500]  # 5%, 10%, 15%
+
+
 async def execute_buy(
     client: AsyncClient,
     keypair: Keypair,
@@ -101,56 +104,79 @@ async def execute_buy(
     sol_amount: float,
     settings: Settings,
 ) -> tuple[str, float]:
-    """Buy a token with SOL via Jupiter.
+    """Buy a token with SOL via Jupiter with auto-retry on increasing slippage.
+
+    Tries at 5% → 10% → 15% slippage before giving up.
 
     Returns:
         (tx_signature, tokens_received)
     """
     amount_lamports = int(sol_amount * LAMPORTS_PER_SOL)
 
-    # Get quote: SOL -> token
-    quote = await get_quote(
-        session, SOL_MINT, contract_address, amount_lamports, settings,
-    )
-    tokens_received = float(quote.out_amount)
+    for attempt, slippage_bps in enumerate(_BUY_SLIPPAGE_TIERS):
+        try:
+            buy_settings = settings.model_copy(update={"SLIPPAGE_BPS": slippage_bps})
 
-    logger.info(
-        "Buy quote received",
-        token=contract_address,
-        sol_in=sol_amount,
-        tokens_out=tokens_received,
-        price_impact=f"{quote.price_impact_pct:.2f}%",
-        paper=settings.PAPER_MODE,
-    )
+            quote = await get_quote(
+                session, SOL_MINT, contract_address, amount_lamports, buy_settings,
+            )
+            tokens_received = float(quote.out_amount)
 
-    if settings.PAPER_MODE:
-        tx_sig = f"paper-buy-{uuid.uuid4().hex[:12]}"
-        logger.info("PAPER BUY executed", tx=tx_sig, token=contract_address, sol=sol_amount)
-        return (tx_sig, tokens_received)
+            logger.info(
+                "Buy quote received",
+                token=contract_address,
+                sol_in=sol_amount,
+                tokens_out=tokens_received,
+                price_impact=f"{quote.price_impact_pct:.2f}%",
+                slippage_bps=slippage_bps,
+                attempt=attempt + 1,
+                paper=settings.PAPER_MODE,
+            )
 
-    # Live execution
-    tx_bytes = await get_swap_transaction(
-        session, quote, str(keypair.pubkey()), settings,
-    )
-    tx_sig = await _sign_and_send(client, keypair, tx_bytes)
-    logger.info("BUY executed", tx=tx_sig, token=contract_address, sol=sol_amount)
+            if settings.PAPER_MODE:
+                tx_sig = f"paper-buy-{uuid.uuid4().hex[:12]}"
+                logger.info("PAPER BUY executed", tx=tx_sig, token=contract_address, sol=sol_amount)
+                return (tx_sig, tokens_received)
 
-    # Verify transaction succeeded on-chain
-    await asyncio.sleep(2)  # Wait for confirmation
-    try:
-        tx_resp = await client.get_transaction(
-            Signature.from_string(tx_sig),
-            max_supported_transaction_version=0,
-        )
-        if tx_resp.value and tx_resp.value.transaction.meta.err:
-            raise TransactionFailedError(f"Transaction landed but swap failed: {tx_sig}")
-    except Exception as verify_err:
-        if "swap failed" in str(verify_err):
-            raise
-        # Verification failed but tx might still be ok — log warning
-        logger.warning("Could not verify transaction", tx=tx_sig, error=str(verify_err))
+            # Live execution
+            tx_bytes = await get_swap_transaction(
+                session, quote, str(keypair.pubkey()), buy_settings,
+            )
+            tx_sig = await _sign_and_send(client, keypair, tx_bytes, settings)
+            logger.info("BUY executed", tx=tx_sig, token=contract_address, sol=sol_amount,
+                        slippage_bps=slippage_bps, attempt=attempt + 1)
 
-    return (tx_sig, tokens_received)
+            # Verify transaction succeeded on-chain
+            await asyncio.sleep(2)
+            try:
+                tx_resp = await client.get_transaction(
+                    Signature.from_string(tx_sig),
+                    max_supported_transaction_version=0,
+                )
+                if tx_resp.value and tx_resp.value.transaction.meta.err:
+                    raise TransactionFailedError(f"Transaction landed but swap failed: {tx_sig}")
+            except Exception as verify_err:
+                if "swap failed" in str(verify_err):
+                    raise
+                logger.warning("Could not verify transaction", tx=tx_sig, error=str(verify_err))
+
+            return (tx_sig, tokens_received)
+
+        except Exception as e:
+            error_str = str(e)
+            is_slippage = "0x1771" in error_str or "0x1789" in error_str or "SlippageToleranceExceeded" in error_str
+            if is_slippage and attempt < len(_BUY_SLIPPAGE_TIERS) - 1:
+                logger.warning(
+                    "Buy failed on slippage, retrying with higher tolerance",
+                    token=contract_address,
+                    slippage_bps=slippage_bps,
+                    next_slippage_bps=_BUY_SLIPPAGE_TIERS[attempt + 1],
+                    attempt=attempt + 1,
+                )
+                await asyncio.sleep(1)
+                continue
+            else:
+                raise
 
 
 _SELL_SLIPPAGE_TIERS = [500, 1000, 1500, 2500]  # 5%, 10%, 15%, 25%
@@ -212,7 +238,7 @@ async def execute_sell(
             tx_bytes = await get_swap_transaction(
                 session, quote, str(keypair.pubkey()), sell_settings,
             )
-            tx_sig = await _sign_and_send(client, keypair, tx_bytes)
+            tx_sig = await _sign_and_send(client, keypair, tx_bytes, settings)
             logger.info("SELL executed", tx=tx_sig, token=contract_address, sol=sol_received,
                         slippage_bps=slippage_bps, attempt=attempt + 1)
             return (tx_sig, sol_received)
@@ -342,8 +368,14 @@ async def execute_buy_split(
 
 async def _sign_and_send(
     client: AsyncClient, keypair: Keypair, tx_bytes: bytes,
+    settings: Settings | None = None,
 ) -> str:
-    """Deserialize, sign, send, and confirm a versioned transaction."""
+    """Deserialize, sign, send (via Jito if enabled), and confirm."""
+    if settings and settings.JITO_ENABLED:
+        from sniper.jito import send_transaction_with_jito
+        return await send_transaction_with_jito(client, keypair, tx_bytes, settings)
+
+    # Standard path
     try:
         txn = VersionedTransaction.from_bytes(tx_bytes)
         txn = VersionedTransaction(txn.message, [keypair])
