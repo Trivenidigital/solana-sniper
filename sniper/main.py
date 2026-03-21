@@ -10,7 +10,6 @@ import structlog
 from solana.rpc.async_api import AsyncClient
 
 from sniper.config import Settings
-from sniper.copy_trader import monitor_wallets, smart_money_signals, prune_stale_signals
 from sniper.dashboard import print_dashboard
 from sniper.db import Database
 from sniper.executor import execute_buy, execute_buy_split
@@ -132,25 +131,6 @@ async def main() -> None:
         _dashboard_task(db, args.dashboard_interval, shutdown_event)
     )
 
-    # Start copy trader background task (score boost mode — not blind buying)
-    copy_trade_task = None
-    if settings.COPY_TRADE_ENABLED:
-        async def _on_smart_money_signal(token_mint: str, source_wallet: str | None) -> None:
-            """Notification when a tracked wallet buys — sends Telegram alert."""
-            await send_telegram(
-                f"Smart Money Signal\n"
-                f"Token: {token_mint[:20]}...\n"
-                f"Wallet: {source_wallet[:8] + '...' if source_wallet else 'unknown'}\n"
-                f"Score boost: +{settings.COPY_TRADE_SCORE_BOOST} conviction\n"
-                f"Token will be prioritized in next scan cycle",
-                settings,
-            )
-
-        copy_trade_task = asyncio.create_task(
-            monitor_wallets(settings, _on_smart_money_signal)
-        )
-        logger.info("Copy trader started (score boost mode)")
-
     try:
         async with aiohttp.ClientSession() as session:
             while not shutdown_event.is_set():
@@ -158,7 +138,6 @@ async def main() -> None:
                     now = datetime.now(timezone.utc)
 
                     # --- Signal check phase ---
-                    prune_stale_signals()
                     elapsed = (now - last_signal_check).total_seconds()
                     if elapsed >= settings.POLL_INTERVAL_SECONDS:
                         signals = await read_new_signals(
@@ -180,16 +159,8 @@ async def main() -> None:
                             bal = await get_sol_balance(rpc_client, pubkey) if not settings.PAPER_MODE else 1.0
                             kelly_bet = await calculate_kelly_bet(db, bal, settings)
 
-                            # Conviction-weighted sizing (boost if smart money detected)
+                            # Conviction-weighted sizing
                             conviction = sig_data.conviction_score or 30
-                            if sig_data.contract_address in smart_money_signals:
-                                conviction += settings.COPY_TRADE_SCORE_BOOST
-                                logger.info(
-                                    "Smart money boost applied",
-                                    token=sig_data.token_name,
-                                    original=sig_data.conviction_score,
-                                    boosted=conviction,
-                                )
                             conviction_factor = 0.5 + 0.5 * (conviction / 100)
                             kelly_bet_adj = kelly_bet * conviction_factor
 
@@ -403,12 +374,6 @@ async def main() -> None:
             await dash_task
         except asyncio.CancelledError:
             pass
-        if copy_trade_task is not None:
-            copy_trade_task.cancel()
-            try:
-                await copy_trade_task
-            except asyncio.CancelledError:
-                pass
         await db.close()
         await rpc_client.close()
         logger.info("Sniper stopped", cycles_completed=cycle_count)

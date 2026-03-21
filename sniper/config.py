@@ -119,15 +119,6 @@ class Settings(BaseSettings):
     # DCA on dip (risky — disabled by default)
     DCA_ENABLED: bool = False
 
-    # Copy Trading (score boost mode)
-    COPY_TRADE_ENABLED: bool = False
-    COPY_TRADE_WALLETS: str = ""  # Comma-separated wallet addresses to track
-    COPY_TRADE_SCORE_BOOST: int = 20  # Conviction boost when smart money buys
-    HELIUS_API_KEY: str = ""  # Required for copy trading WebSocket
-
-    # Dashboard API key (required for /api/trade endpoint)
-    DASHBOARD_API_KEY: str = ""
-
     # Telegram notifications
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_CHAT_ID: str = ""
