@@ -487,7 +487,7 @@ async function executeTrade(side) {
   try {
     const resp = await fetch('/api/trade', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json', 'X-API-Key': 'DASHBOARD_KEY_HERE'},
+      headers: {'Content-Type': 'application/json', 'X-API-Key': '{{ dashboard_api_key }}'},
       body: JSON.stringify({side, token, amount})
     });
     const data = await resp.json();
@@ -573,6 +573,7 @@ async def handle_dashboard(request: web.Request) -> web.Response:
         win_rate=win_rate, winners=winners, total_closed=total_closed,
         sol_price=sol_price, sol_balance=sol_balance,
         wallet_pubkey=wallet_pubkey, scanner=scanner,
+        dashboard_api_key=_get_settings().DASHBOARD_API_KEY or "",
         open_positions=open_positions, closed_positions=closed_positions,
         recent_trades=recent_trades, now=datetime.now(timezone.utc).isoformat(),
     )
@@ -605,8 +606,9 @@ async def handle_trade(request: web.Request) -> web.Response:
     settings = _get_settings()
     if not settings.DASHBOARD_API_KEY:
         return web.json_response({"error": "Trading disabled — set DASHBOARD_API_KEY in .env"}, status=403)
+    import hmac
     api_key = request.headers.get("X-API-Key", "")
-    if api_key != settings.DASHBOARD_API_KEY:
+    if not hmac.compare_digest(api_key, settings.DASHBOARD_API_KEY):
         return web.json_response({"error": "Unauthorized"}, status=401)
     try:
         body = await request.json()
@@ -623,7 +625,7 @@ async def handle_trade(request: web.Request) -> web.Response:
         from solana.rpc.async_api import AsyncClient
 
         settings = Settings()
-        settings.PAPER_MODE = False
+        # DR-003: Respect env PAPER_MODE setting, don't force live
         kp = load_keypair(settings.KEYPAIR_PATH)
         client = AsyncClient(settings.SOLANA_RPC_URL)
 
@@ -678,7 +680,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Solana Sniper PnL Dashboard")
     parser.add_argument("--port", type=int, default=8080, help="Port (default: 8080)")
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host (default: 0.0.0.0)")
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host (default: 127.0.0.1, use nginx proxy for external)")
     args = parser.parse_args()
 
     app = create_app()
