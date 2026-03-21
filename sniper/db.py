@@ -179,6 +179,19 @@ class Database:
         row = await cursor.fetchone()
         return float(row[0]) if row else 0.0
 
+    async def get_recent_closed(self, limit: int = 20) -> list[dict]:
+        """Get the N most recent closed positions for Kelly calculation."""
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        cursor = await self._conn.execute(
+            "SELECT pnl_sol, pnl_pct, exit_reason FROM positions "
+            "WHERE status='closed' AND pnl_sol IS NOT NULL AND pnl_sol != 0 "
+            "ORDER BY closed_at DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
     # ------------------------------------------------------------------
     # Trades
     # ------------------------------------------------------------------

@@ -13,6 +13,7 @@ from sniper.config import Settings
 from sniper.dashboard import print_dashboard
 from sniper.db import Database
 from sniper.executor import execute_buy, execute_buy_split
+from sniper.kelly import calculate_kelly_bet
 from sniper.models import Position
 from sniper.multi_wallet import copy_buy, load_wallets, get_all_balances
 from sniper.position_manager import check_positions, portfolio_summary
@@ -154,20 +155,24 @@ async def main() -> None:
                                 logger.info("Max positions reached", count=open_count)
                                 break
 
-                            # Liquidity-adjusted position sizing
+                            # Position sizing: Kelly → liquidity adjustment
+                            bal = await get_sol_balance(rpc_client, pubkey) if not settings.PAPER_MODE else 1.0
+                            kelly_bet = await calculate_kelly_bet(db, bal, settings)
+
                             if settings.LIQUIDITY_SIZING_ENABLED:
                                 liq = sig_data.liquidity_usd or 5000
                                 size_ratio = min(1.0, liq / 20000)
-                                buy_amount = max(0.05, settings.MAX_BUY_SOL * size_ratio)
-                                logger.info(
-                                    "Liquidity-adjusted sizing",
-                                    token=sig_data.token_name,
-                                    liquidity_usd=liq,
-                                    size_ratio=f"{size_ratio:.2f}",
-                                    buy_amount=f"{buy_amount:.4f}",
-                                )
+                                buy_amount = max(settings.KELLY_MIN_BET, kelly_bet * size_ratio)
                             else:
-                                buy_amount = settings.MAX_BUY_SOL
+                                buy_amount = kelly_bet
+
+                            buy_amount = min(buy_amount, settings.KELLY_MAX_BET)
+                            logger.info(
+                                "Position sizing",
+                                token=sig_data.token_name,
+                                kelly_bet=f"{kelly_bet:.4f}",
+                                buy_amount=f"{buy_amount:.4f}",
+                            )
 
                             exposure = await db.get_total_exposure_sol()
                             if exposure + buy_amount > settings.MAX_PORTFOLIO_SOL:

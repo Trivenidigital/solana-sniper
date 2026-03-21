@@ -100,6 +100,13 @@ class Settings(BaseSettings):
     # Liquidity-adjusted position sizing
     LIQUIDITY_SIZING_ENABLED: bool = True
 
+    # Kelly Criterion position sizing
+    KELLY_ENABLED: bool = True
+    KELLY_LOOKBACK: int = 20       # Number of recent trades to analyze
+    KELLY_MIN_TRADES: int = 5      # Minimum trades before Kelly activates
+    KELLY_MIN_BET: float = 0.05    # Floor (SOL)
+    KELLY_MAX_BET: float = 0.3     # Ceiling (SOL)
+
     # Trading dead hours (skip signals during these UTC hours)
     TRADING_DEAD_HOURS: str = "2,3,4,5,6"
 
