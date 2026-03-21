@@ -11,7 +11,7 @@ from solders.keypair import Keypair
 
 from sniper.config import Settings
 from sniper.db import Database
-from sniper.executor import execute_buy, execute_sell
+from sniper.executor import execute_buy, execute_sell, _decimals_cache
 from sniper.telegram_notify import send_telegram
 
 logger = structlog.get_logger()
@@ -43,7 +43,7 @@ async def _fetch_position_data(
             price_native = pair.get("priceNative")
             value_sol = None
             if price_native:
-                decimals = 6 if contract_address.endswith("pump") else 9
+                decimals = _decimals_cache.get(contract_address, 6 if contract_address.endswith("pump") else 9)
                 human_tokens = token_amount / (10 ** decimals)
                 value_sol = human_tokens * float(price_native)
             # Sell ratio
@@ -252,7 +252,7 @@ async def check_positions(
                 )
 
             # DCA: if high-conviction token dips 15-25% but sell pressure is normal, buy more
-            if settings.DCA_ENABLED and pnl_pct < -15 and pnl_pct > -25:
+            if settings.DCA_ENABLED and pnl_pct < -5 and pnl_pct > -10:
                 sell_ratio_dca = sell_ratio  # reuse sell_ratio from _fetch_position_data
                 if sell_ratio_dca is not None and sell_ratio_dca < 0.5:
                     # Only DCA once per position
@@ -379,8 +379,10 @@ async def _partial_sell(
     if pos.id is None:
         return
     try:
-        sell_tokens = int(pos.entry_token_amount * fraction)
-        remaining_tokens = int(pos.entry_token_amount) - sell_tokens  # Both ints to avoid float drift
+        # Use integer math to avoid float precision loss on large token amounts
+        total_tokens = int(pos.entry_token_amount)
+        sell_tokens = total_tokens * int(fraction * 100) // 100
+        remaining_tokens = total_tokens - sell_tokens
         tx_sig, sol_received = await execute_sell(
             client, keypair, session,
             pos.contract_address, sell_tokens, settings,
@@ -393,6 +395,10 @@ async def _partial_sell(
             tx_signature=tx_sig,
             price_usd=None,
         )
+        # Log partial sell PnL for Kelly tracking
+        partial_pnl = sol_received - (pos.entry_sol * fraction)
+        logger.info("Partial sell PnL", token=pos.token_name, sol_received=sol_received,
+                    fraction=fraction, partial_pnl=f"{partial_pnl:+.4f}")
         # Adjust entry_sol proportionally to reflect the fraction sold
         fraction_sold = sell_tokens / pos.entry_token_amount if pos.entry_token_amount > 0 else fraction
         new_entry_sol = pos.entry_sol * (1 - fraction_sold)
@@ -486,15 +492,19 @@ async def _close_position(
                 "Force-closing worthless position after 5 failed sell attempts",
                 token=token_name, reason=reason,
             )
-            await db.close_position(
-                position_id=position_id,
-                exit_sol=0,
-                exit_price_usd=0,
-                exit_tx=None,
-                exit_reason="unsellable",
-                pnl_sol=-entry_sol,
-                pnl_pct=-100,
-            )
+            try:
+                await db.close_position(
+                    position_id=position_id,
+                    exit_sol=0,
+                    exit_price_usd=0,
+                    exit_tx=None,
+                    exit_reason="unsellable",
+                    pnl_sol=-entry_sol,
+                    pnl_pct=-100,
+                )
+            except Exception as db_err:
+                logger.error("Failed to force-close in DB", token=token_name, error=str(db_err))
+                return f"FORCE_CLOSE_DB_FAILED: {token_name}"
             await send_telegram(
                 f"Position Force-Closed (unsellable)\n"
                 f"Token: {token_name}\n"

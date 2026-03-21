@@ -487,7 +487,7 @@ async function executeTrade(side) {
   try {
     const resp = await fetch('/api/trade', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', 'X-API-Key': 'DASHBOARD_KEY_HERE'},
       body: JSON.stringify({side, token, amount})
     });
     const data = await resp.json();
@@ -601,6 +601,13 @@ async def handle_api(request: web.Request) -> web.Response:
 
 async def handle_trade(request: web.Request) -> web.Response:
     """Handle manual buy/sell from the dashboard."""
+    # Require API key for trade execution
+    settings = _get_settings()
+    if not settings.DASHBOARD_API_KEY:
+        return web.json_response({"error": "Trading disabled — set DASHBOARD_API_KEY in .env"}, status=403)
+    api_key = request.headers.get("X-API-Key", "")
+    if api_key != settings.DASHBOARD_API_KEY:
+        return web.json_response({"error": "Unauthorized"}, status=401)
     try:
         body = await request.json()
         side = body.get("side", "buy")
