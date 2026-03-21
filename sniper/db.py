@@ -287,6 +287,16 @@ class Database:
         )
         await self._conn.commit()
 
+    async def update_dca_entry(self, position_id: int, new_entry_sol: float, new_token_amount: float) -> None:
+        """Update position entry after DCA buy. Does NOT touch partial_exit_tier."""
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        await self._conn.execute(
+            "UPDATE positions SET entry_sol=?, entry_token_amount=? WHERE id=?",
+            (new_entry_sol, new_token_amount, position_id),
+        )
+        await self._conn.commit()
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------

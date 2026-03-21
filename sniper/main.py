@@ -238,7 +238,7 @@ async def main() -> None:
                                             ticker=sig_data.ticker,
                                             entry_sol=buy_amount,
                                             entry_token_amount=r["tokens"],
-                                            entry_price_usd=0,  # Will be updated with actual price from DexScreener
+                                            entry_price_usd=sig_data.market_cap_usd or 0,
                                             entry_tx=r["tx"],
                                             paper=settings.PAPER_MODE,
                                         )
@@ -263,7 +263,7 @@ async def main() -> None:
                                     await send_telegram(
                                         f"Copy Trade Opened\n"
                                         f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
-                                        f"Conviction: {sig_data.conviction_score:.1f}\n"
+                                        f"Conviction: {sig_data.conviction_score or 0:.1f}\n"
                                         f"Wallets: {len(succeeded)}/{len(wallets)}\n"
                                         f"Total SOL: {total_sol}\n"
                                         f"Total Tokens: {total_tokens:.2f}",
@@ -310,7 +310,7 @@ async def main() -> None:
                                         ticker=sig_data.ticker,
                                         entry_sol=buy_amount,
                                         entry_token_amount=tokens,
-                                        entry_price_usd=0,  # Will be updated with actual price from DexScreener
+                                        entry_price_usd=sig_data.market_cap_usd or 0,
                                         entry_tx=tx_sig,
                                         paper=settings.PAPER_MODE,
                                     )
@@ -328,7 +328,7 @@ async def main() -> None:
                                     await send_telegram(
                                         f"Position Opened\n"
                                         f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
-                                        f"Conviction: {sig_data.conviction_score:.1f}\n"
+                                        f"Conviction: {sig_data.conviction_score or 0:.1f}\n"
                                         f"SOL: {buy_amount}\n"
                                         f"Tokens: {tokens:.2f}\n"
                                         f"TX: {tx_sig}",

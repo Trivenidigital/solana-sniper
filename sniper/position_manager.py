@@ -19,6 +19,9 @@ logger = structlog.get_logger()
 # Track consecutive sell failures per position to force-close unsellable tokens
 _sell_fail_counts: dict[str, int] = {}
 
+# Track which positions have had DCA (per-cycle, avoids reusing partial_exit_done)
+_dca_done_positions: set[int] = set()
+
 
 async def _fetch_position_data(
     session: aiohttp.ClientSession, contract_address: str, token_amount: int,
@@ -119,6 +122,7 @@ async def check_positions(
                 db, client, keypair, session, settings,
                 pos, 0.25, pnl_pct, actions, tier=1,
             )
+            continue  # Re-evaluate next cycle to avoid double partial sell with trailing
 
         # --- Trailing stop management (runs BEFORE phase checks) ---
         if pos.trailing_active and pos.id is not None:
@@ -249,10 +253,10 @@ async def check_positions(
 
             # DCA: if high-conviction token dips 15-25% but sell pressure is normal, buy more
             if settings.DCA_ENABLED and pnl_pct < -15 and pnl_pct > -25:
-                sell_ratio = await _get_sell_pressure(session, pos.contract_address)
-                if sell_ratio is not None and sell_ratio < 0.5:
-                    # Only DCA once per position (reuse partial_exit_done flag)
-                    if not pos.partial_exit_done:
+                sell_ratio_dca = sell_ratio  # reuse sell_ratio from _fetch_position_data
+                if sell_ratio_dca is not None and sell_ratio_dca < 0.5:
+                    # Only DCA once per position
+                    if pos.id not in _dca_done_positions:
                         logger.info("DCA opportunity", token=pos.token_name, pnl=f"{pnl_pct:.1f}%")
                         try:
                             dca_amount = pos.entry_sol * 0.5  # Buy half the original size
@@ -262,10 +266,10 @@ async def check_positions(
                             # Update position with new tokens and adjusted entry
                             new_tokens = pos.entry_token_amount + tokens
                             new_entry = pos.entry_sol + dca_amount
-                            await db.update_partial_exit(pos.id, new_entry, new_tokens, 0)
+                            await db.update_dca_entry(pos.id, new_entry, new_tokens)
                             pos.entry_sol = new_entry
                             pos.entry_token_amount = new_tokens
-                            pos.partial_exit_done = True
+                            _dca_done_positions.add(pos.id)
                             actions.append(f"DCA: {pos.token_name} added {dca_amount} SOL")
                         except Exception as e:
                             logger.warning("DCA buy failed", token=pos.token_name, error=str(e))
@@ -376,7 +380,7 @@ async def _partial_sell(
         return
     try:
         sell_tokens = int(pos.entry_token_amount * fraction)
-        remaining_tokens = pos.entry_token_amount - sell_tokens
+        remaining_tokens = int(pos.entry_token_amount) - sell_tokens  # Both ints to avoid float drift
         tx_sig, sol_received = await execute_sell(
             client, keypair, session,
             pos.contract_address, sell_tokens, settings,

@@ -28,7 +28,11 @@ _rpc_clients: list[AsyncClient] = []
 
 
 async def _get_healthy_client(settings: Settings) -> AsyncClient:
-    """Get a healthy RPC client, falling back to alternatives."""
+    """Get a healthy RPC client, falling back to alternatives.
+
+    NOTE: This is infrastructure for future use. Not wired into execution path yet
+    to avoid changing the hot path. Call manually if primary RPC is unresponsive.
+    """
     if not _rpc_clients:
         urls = [settings.SOLANA_RPC_URL]
         if settings.SOLANA_RPC_URLS:
@@ -198,6 +202,9 @@ async def execute_sell(
             )
 
             if settings.PAPER_MODE:
+                # NOTE: Paper mode does not track on-chain balance, so partial sells
+                # may over-sell. This is acceptable since we run live. To fix properly,
+                # track cumulative sold amounts in a module-level dict keyed by contract_address.
                 tx_sig = f"paper-sell-{uuid.uuid4().hex[:12]}"
                 logger.info("PAPER SELL executed", tx=tx_sig, token=contract_address, sol=sol_received)
                 return (tx_sig, sol_received)
