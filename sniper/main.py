@@ -10,6 +10,7 @@ import structlog
 from solana.rpc.async_api import AsyncClient
 
 from sniper.config import Settings
+from sniper.copy_trader import monitor_wallets
 from sniper.dashboard import print_dashboard
 from sniper.db import Database
 from sniper.executor import execute_buy, execute_buy_split
@@ -130,6 +131,92 @@ async def main() -> None:
     dash_task = asyncio.create_task(
         _dashboard_task(db, args.dashboard_interval, shutdown_event)
     )
+
+    # Start copy trader background task
+    copy_trade_task = None
+    if settings.COPY_TRADE_ENABLED:
+        async def _copy_trade_buy(token_mint: str, source_wallet: str | None) -> None:
+            """Callback invoked when a tracked wallet buys a token."""
+            try:
+                # Skip if we already have a position for this token
+                existing = await db.get_open_position_by_address(token_mint)
+                if existing:
+                    logger.info("Copy trade skipped — already have position", token=token_mint)
+                    return
+
+                # Check open positions limit
+                open_count = await db.count_open_positions()
+                if open_count >= settings.MAX_OPEN_POSITIONS:
+                    logger.info("Copy trade skipped — max positions reached", count=open_count)
+                    return
+
+                # Check portfolio exposure
+                exposure = await db.get_total_exposure_sol()
+                buy_amount = settings.COPY_TRADE_MAX_BUY
+                if exposure + buy_amount > settings.MAX_PORTFOLIO_SOL:
+                    logger.info("Copy trade skipped — max exposure reached", exposure=exposure)
+                    return
+
+                # Check balance (live mode)
+                if not settings.PAPER_MODE:
+                    bal = await get_sol_balance(rpc_client, pubkey)
+                    if bal < buy_amount + 0.01:
+                        logger.warning("Copy trade skipped — insufficient SOL", balance=bal)
+                        return
+
+                # Execute buy
+                async with aiohttp.ClientSession() as ct_session:
+                    tx_sig, tokens = await asyncio.wait_for(
+                        execute_buy(
+                            rpc_client, keypair, ct_session,
+                            token_mint, buy_amount, settings,
+                        ),
+                        timeout=settings.BUY_TIMEOUT_SECONDS,
+                    )
+
+                # Record position
+                pos = Position(
+                    contract_address=token_mint,
+                    token_name=f"copy-{token_mint[:8]}",
+                    ticker="COPY",
+                    entry_sol=buy_amount,
+                    entry_token_amount=tokens,
+                    entry_price_usd=0,
+                    entry_tx=tx_sig,
+                    paper=settings.PAPER_MODE,
+                )
+                pos_id = await db.open_position(pos)
+                await db.log_trade(pos_id, "buy", buy_amount, tokens, tx_sig, None)
+
+                logger.info(
+                    "Copy trade executed",
+                    source="copy_trade",
+                    token=token_mint,
+                    source_wallet=source_wallet[:8] + "..." if source_wallet else "unknown",
+                    sol=buy_amount,
+                    tokens=tokens,
+                    tx=tx_sig,
+                )
+
+                await send_telegram(
+                    f"Copy Trade Executed\n"
+                    f"Token: {token_mint[:16]}...\n"
+                    f"Source wallet: {source_wallet[:8] + '...' if source_wallet else 'unknown'}\n"
+                    f"SOL: {buy_amount}\n"
+                    f"Tokens: {tokens:.2f}\n"
+                    f"TX: {tx_sig}",
+                    settings,
+                )
+
+            except asyncio.TimeoutError:
+                logger.warning("Copy trade buy timed out", token=token_mint)
+            except Exception as e:
+                logger.error("Copy trade buy failed", token=token_mint, error=str(e))
+
+        copy_trade_task = asyncio.create_task(
+            monitor_wallets(settings, _copy_trade_buy)
+        )
+        logger.info("Copy trader background task started")
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -374,6 +461,12 @@ async def main() -> None:
             await dash_task
         except asyncio.CancelledError:
             pass
+        if copy_trade_task is not None:
+            copy_trade_task.cancel()
+            try:
+                await copy_trade_task
+            except asyncio.CancelledError:
+                pass
         await db.close()
         await rpc_client.close()
         logger.info("Sniper stopped", cycles_completed=cycle_count)

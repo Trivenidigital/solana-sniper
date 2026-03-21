@@ -124,6 +124,14 @@ class Settings(BaseSettings):
     JITO_ENABLED: bool = False  # Enable for MEV-protected transactions
     JITO_TIP_LAMPORTS: int = 10000  # Tip for Jito validators (0.00001 SOL)
 
+    # Helius API (for copy trading / parsed transactions)
+    HELIUS_API_KEY: str = ""
+
+    # Copy Trading
+    COPY_TRADE_ENABLED: bool = False  # Enable wallet copy trading
+    COPY_TRADE_WALLETS: str = ""  # Comma-separated wallet addresses to track
+    COPY_TRADE_MAX_BUY: float = 0.3  # Max SOL per copy trade
+
     # Telegram notifications
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_CHAT_ID: str = ""
