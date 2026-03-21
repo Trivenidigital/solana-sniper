@@ -13,6 +13,13 @@ from sniper.models import Signal
 logger = structlog.get_logger()
 
 
+def _ensure_utc(dt: datetime) -> datetime:
+    """Ensure datetime is timezone-aware (UTC)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 async def read_new_signals(
     scout_db_path: Path,
     since: datetime,
@@ -50,9 +57,7 @@ async def read_new_signals(
             for row in rows:
                 d = dict(row)
                 alerted_at = datetime.fromisoformat(d["alerted_at"])
-                if alerted_at.tzinfo is None:
-                    alerted_at = alerted_at.replace(tzinfo=timezone.utc)
-                d["alerted_at"] = alerted_at
+                d["alerted_at"] = _ensure_utc(alerted_at)
                 signals.append(Signal(**d))
     except Exception:
         logger.warning("Failed to read scout database", path=str(scout_db_path), exc_info=True)
@@ -79,8 +84,7 @@ async def filter_actionable(
     now = datetime.now(timezone.utc)
     for signal in signals:
         # Ensure timezone-aware datetime
-        if signal.alerted_at.tzinfo is None:
-            signal.alerted_at = signal.alerted_at.replace(tzinfo=timezone.utc)
+        signal.alerted_at = _ensure_utc(signal.alerted_at)
         # Signal freshness gate
         signal_age_seconds = (now - signal.alerted_at).total_seconds()
         if signal_age_seconds > settings.MAX_SIGNAL_AGE_SECONDS:

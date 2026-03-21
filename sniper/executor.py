@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from collections import OrderedDict
 
 import aiohttp
 import structlog
@@ -22,13 +23,15 @@ from sniper.jupiter import (
 
 logger = structlog.get_logger()
 
-# Module-level cache for token decimals (contract_address -> decimals)
-_decimals_cache: dict[str, int] = {}
+# Module-level LRU cache for token decimals (contract_address -> decimals)
+_decimals_cache: OrderedDict[str, int] = OrderedDict()
+_DECIMALS_CACHE_MAX = 500
 
 
 async def _get_token_decimals(contract_address: str, session: aiohttp.ClientSession, settings: Settings) -> int:
     """Fetch token decimals from Solana RPC, with caching and fallback."""
     if contract_address in _decimals_cache:
+        _decimals_cache.move_to_end(contract_address)
         return _decimals_cache[contract_address]
     try:
         payload = {
@@ -38,12 +41,14 @@ async def _get_token_decimals(contract_address: str, session: aiohttp.ClientSess
             "params": [contract_address, {"encoding": "jsonParsed"}],
         }
         async with session.post(
-            settings.SOLANA_RPC_URL, json=payload, timeout=aiohttp.ClientTimeout(total=10),
+            settings.SOLANA_RPC_URL, json=payload, timeout=aiohttp.ClientTimeout(total=5),
         ) as resp:
             data = await resp.json()
             parsed = data["result"]["value"]["data"]["parsed"]["info"]
             decimals = int(parsed["decimals"])
             _decimals_cache[contract_address] = decimals
+            if len(_decimals_cache) > _DECIMALS_CACHE_MAX:
+                _decimals_cache.popitem(last=False)  # Remove oldest
             return decimals
     except Exception:
         # Fallback: pump.fun tokens are 6, most others are 9
