@@ -154,14 +154,29 @@ async def main() -> None:
                                 logger.info("Max positions reached", count=open_count)
                                 break
 
+                            # Liquidity-adjusted position sizing
+                            if settings.LIQUIDITY_SIZING_ENABLED:
+                                liq = sig_data.liquidity_usd or 5000
+                                size_ratio = min(1.0, liq / 20000)
+                                buy_amount = max(0.05, settings.MAX_BUY_SOL * size_ratio)
+                                logger.info(
+                                    "Liquidity-adjusted sizing",
+                                    token=sig_data.token_name,
+                                    liquidity_usd=liq,
+                                    size_ratio=f"{size_ratio:.2f}",
+                                    buy_amount=f"{buy_amount:.4f}",
+                                )
+                            else:
+                                buy_amount = settings.MAX_BUY_SOL
+
                             exposure = await db.get_total_exposure_sol()
-                            if exposure + settings.MAX_BUY_SOL > settings.MAX_PORTFOLIO_SOL:
+                            if exposure + buy_amount > settings.MAX_PORTFOLIO_SOL:
                                 logger.info("Max exposure reached", exposure=exposure)
                                 break
 
                             if not settings.PAPER_MODE:
                                 bal = await get_sol_balance(rpc_client, pubkey)
-                                if bal < settings.MAX_BUY_SOL + 0.01:
+                                if bal < buy_amount + 0.01:
                                     logger.warning("Insufficient SOL", balance=bal)
                                     break
 
@@ -179,13 +194,25 @@ async def main() -> None:
                             # Execute buy (single or multi-wallet)
                             try:
                                 if settings.MULTI_WALLET_ENABLED and len(wallets) > 1:
-                                    # Copy trade across all wallets
-                                    results = await copy_buy(
-                                        rpc_client, wallets, session,
-                                        sig_data.contract_address,
-                                        settings.MAX_BUY_SOL,
-                                        settings,
-                                    )
+                                    # Copy trade across all wallets (with timeout)
+                                    try:
+                                        results = await asyncio.wait_for(
+                                            copy_buy(
+                                                rpc_client, wallets, session,
+                                                sig_data.contract_address,
+                                                buy_amount,
+                                                settings,
+                                            ),
+                                            timeout=settings.BUY_TIMEOUT_SECONDS,
+                                        )
+                                    except asyncio.TimeoutError:
+                                        logger.warning(
+                                            "Buy timed out, skipping",
+                                            token=sig_data.token_name,
+                                            timeout=settings.BUY_TIMEOUT_SECONDS,
+                                            mode="multi_wallet",
+                                        )
+                                        continue
                                     # Log a position for each successful wallet
                                     succeeded = [r for r in results if r["success"]]
                                     if not succeeded:
@@ -197,7 +224,7 @@ async def main() -> None:
                                             contract_address=sig_data.contract_address,
                                             token_name=sig_data.token_name,
                                             ticker=sig_data.ticker,
-                                            entry_sol=settings.MAX_BUY_SOL,
+                                            entry_sol=buy_amount,
                                             entry_token_amount=r["tokens"],
                                             entry_price_usd=sig_data.market_cap_usd,
                                             entry_tx=r["tx"],
@@ -205,12 +232,12 @@ async def main() -> None:
                                         )
                                         pos_id = await db.open_position(pos)
                                         await db.log_trade(
-                                            pos_id, "buy", settings.MAX_BUY_SOL, r["tokens"], r["tx"], None,
+                                            pos_id, "buy", buy_amount, r["tokens"], r["tx"], None,
                                         )
 
                                     tx_sig = succeeded[0]["tx"]
                                     total_tokens = sum(r["tokens"] for r in succeeded)
-                                    total_sol = settings.MAX_BUY_SOL * len(succeeded)
+                                    total_sol = buy_amount * len(succeeded)
 
                                     logger.info(
                                         "Copy trade opened",
@@ -232,29 +259,44 @@ async def main() -> None:
                                     )
 
                                 else:
-                                    # Single wallet buy
-                                    if settings.SPLIT_ORDERS:
-                                        tx_sigs, tokens = await execute_buy_split(
-                                            rpc_client, keypair, session,
-                                            sig_data.contract_address,
-                                            settings.MAX_BUY_SOL,
-                                            settings,
-                                            num_splits=settings.SPLIT_COUNT,
-                                            delay_seconds=settings.SPLIT_DELAY_SECONDS,
+                                    # Single wallet buy (with timeout)
+                                    try:
+                                        if settings.SPLIT_ORDERS:
+                                            tx_sigs, tokens = await asyncio.wait_for(
+                                                execute_buy_split(
+                                                    rpc_client, keypair, session,
+                                                    sig_data.contract_address,
+                                                    buy_amount,
+                                                    settings,
+                                                    num_splits=settings.SPLIT_COUNT,
+                                                    delay_seconds=settings.SPLIT_DELAY_SECONDS,
+                                                ),
+                                                timeout=settings.BUY_TIMEOUT_SECONDS,
+                                            )
+                                            tx_sig = tx_sigs[0]
+                                        else:
+                                            tx_sig, tokens = await asyncio.wait_for(
+                                                execute_buy(
+                                                    rpc_client, keypair, session,
+                                                    sig_data.contract_address,
+                                                    buy_amount,
+                                                    settings,
+                                                ),
+                                                timeout=settings.BUY_TIMEOUT_SECONDS,
+                                            )
+                                    except asyncio.TimeoutError:
+                                        logger.warning(
+                                            "Buy timed out, skipping",
+                                            token=sig_data.token_name,
+                                            timeout=settings.BUY_TIMEOUT_SECONDS,
+                                            mode="single_wallet",
                                         )
-                                        tx_sig = tx_sigs[0]
-                                    else:
-                                        tx_sig, tokens = await execute_buy(
-                                            rpc_client, keypair, session,
-                                            sig_data.contract_address,
-                                            settings.MAX_BUY_SOL,
-                                            settings,
-                                        )
+                                        continue
                                     pos = Position(
                                         contract_address=sig_data.contract_address,
                                         token_name=sig_data.token_name,
                                         ticker=sig_data.ticker,
-                                        entry_sol=settings.MAX_BUY_SOL,
+                                        entry_sol=buy_amount,
                                         entry_token_amount=tokens,
                                         entry_price_usd=sig_data.market_cap_usd,
                                         entry_tx=tx_sig,
@@ -262,20 +304,20 @@ async def main() -> None:
                                     )
                                     pos_id = await db.open_position(pos)
                                     await db.log_trade(
-                                        pos_id, "buy", settings.MAX_BUY_SOL, tokens, tx_sig, None,
+                                        pos_id, "buy", buy_amount, tokens, tx_sig, None,
                                     )
                                     logger.info(
                                         "Position opened",
                                         token=sig_data.token_name,
                                         conviction=sig_data.conviction_score,
-                                        sol=settings.MAX_BUY_SOL,
+                                        sol=buy_amount,
                                         tokens=tokens,
                                     )
                                     await send_telegram(
                                         f"Position Opened\n"
                                         f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
                                         f"Conviction: {sig_data.conviction_score:.1f}\n"
-                                        f"SOL: {settings.MAX_BUY_SOL}\n"
+                                        f"SOL: {buy_amount}\n"
                                         f"Tokens: {tokens:.2f}\n"
                                         f"TX: {tx_sig}",
                                         settings,

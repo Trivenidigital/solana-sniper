@@ -94,6 +94,15 @@ class Settings(BaseSettings):
     SPLIT_COUNT: int = 3
     SPLIT_DELAY_SECONDS: int = 10
 
+    # Sell pressure monitoring
+    SELL_PRESSURE_THRESHOLD: float = 0.70
+
+    # Liquidity-adjusted position sizing
+    LIQUIDITY_SIZING_ENABLED: bool = True
+
+    # Trading dead hours (skip signals during these UTC hours)
+    TRADING_DEAD_HOURS: str = "2,3,4,5,6"
+
     # Telegram notifications
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_CHAT_ID: str = ""

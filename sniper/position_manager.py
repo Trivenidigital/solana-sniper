@@ -16,6 +16,31 @@ from sniper.telegram_notify import send_telegram
 logger = structlog.get_logger()
 
 
+async def _get_sell_pressure(session: aiohttp.ClientSession, contract_address: str) -> float | None:
+    """Fetch the 5-minute sell ratio from DexScreener.
+
+    Returns sell_ratio = sells / (buys + sells), or None on failure.
+    """
+    try:
+        url = f"https://api.dexscreener.com/tokens/v1/solana/{contract_address}"
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status != 200:
+                return None
+            pairs = await resp.json()
+            if not pairs or not isinstance(pairs, list) or len(pairs) == 0:
+                return None
+            pair = pairs[0]
+            txns = pair.get("txns", {}).get("m5", {})
+            buys = txns.get("buys", 0)
+            sells = txns.get("sells", 0)
+            total = buys + sells
+            if total == 0:
+                return None
+            return sells / total
+    except Exception:
+        return None
+
+
 async def check_positions(
     db: Database,
     client: AsyncClient,
@@ -221,6 +246,30 @@ async def check_positions(
                     current_value, pnl_pct, "max_hold_exceeded",
                 )
                 await db.set_cooldown(pos.contract_address, settings.COOLDOWN_HOURS)
+                actions.append(action)
+                continue
+
+        # --- Sell pressure check (after phase logic) ---
+        sell_ratio = await _get_sell_pressure(session, pos.contract_address)
+        if sell_ratio is not None:
+            logger.debug(
+                "Sell pressure",
+                token=pos.token_name,
+                sell_ratio=f"{sell_ratio:.2f}",
+            )
+            if sell_ratio > settings.SELL_PRESSURE_THRESHOLD:
+                logger.warning(
+                    "High sell pressure detected — force closing",
+                    token=pos.token_name,
+                    sell_ratio=f"{sell_ratio:.2f}",
+                    threshold=settings.SELL_PRESSURE_THRESHOLD,
+                )
+                action = await _close_position(
+                    db, client, keypair, session, settings,
+                    pos.id, pos.contract_address, pos.token_name,
+                    int(pos.entry_token_amount), pos.entry_sol,
+                    current_value, pnl_pct, "sell_pressure",
+                )
                 actions.append(action)
                 continue
 

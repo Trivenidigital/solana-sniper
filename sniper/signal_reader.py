@@ -82,6 +82,13 @@ async def filter_actionable(
     """
     actionable: list[Signal] = []
     now = datetime.now(timezone.utc)
+
+    # Time-of-day filter: skip all signals during dead hours
+    dead_hours = {int(h.strip()) for h in settings.TRADING_DEAD_HOURS.split(",") if h.strip()}
+    if now.hour in dead_hours:
+        logger.info("Skipping signals during dead hours", utc_hour=now.hour, dead_hours=sorted(dead_hours))
+        return actionable
+
     for signal in signals:
         # Ensure timezone-aware datetime
         signal.alerted_at = _ensure_utc(signal.alerted_at)
