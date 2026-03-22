@@ -83,18 +83,19 @@ async def check_positions(
 
     actions: list[str] = []
 
-    # Batch price + sell-pressure check: single DexScreener call per position
+    # Filter out paper positions — user manages these manually
+    active_positions = [pos for pos in positions if not pos.paper]
+    if len(active_positions) < len(positions):
+        logger.debug("Skipping paper positions", count=len(positions) - len(active_positions))
+
+    # Batch price check: single DexScreener call per active position
     data_tasks = [
         _fetch_position_data(session, pos.contract_address, int(pos.entry_token_amount))
-        for pos in positions
+        for pos in active_positions
     ]
     position_data = await asyncio.gather(*data_tasks, return_exceptions=True)
 
-    for pos, pos_data in zip(positions, position_data):
-        # Skip paper positions — user manages these manually
-        if pos.paper:
-            logger.debug("Skipping paper position", token=pos.token_name)
-            continue
+    for pos, pos_data in zip(active_positions, position_data):
         # Handle exceptions from gather
         if isinstance(pos_data, Exception):
             logger.warning("Price check raised exception", token=pos.token_name, error=str(pos_data))
@@ -212,7 +213,7 @@ async def check_positions(
                     int(pos.entry_token_amount), pos.entry_sol,
                     current_value, pnl_pct, "rug_detected",
                 )
-                await db.set_cooldown(pos.contract_address, settings.COOLDOWN_HOURS)
+                # Cooldown removed — trust conviction score for re-entry
                 actions.append(action)
                 continue
             else:
@@ -238,7 +239,7 @@ async def check_positions(
                     int(pos.entry_token_amount), pos.entry_sol,
                     current_value, pnl_pct, "momentum_lost",
                 )
-                await db.set_cooldown(pos.contract_address, settings.COOLDOWN_HOURS)
+                # Cooldown removed — trust conviction score for re-entry
                 actions.append(action)
                 continue
             elif pnl_pct >= settings.TRAILING_ACTIVATE_PCT and not pos.trailing_active and pos.id is not None:
@@ -294,7 +295,7 @@ async def check_positions(
                     int(pos.entry_token_amount), pos.entry_sol,
                     current_value, pnl_pct, "pump_window_expired",
                 )
-                await db.set_cooldown(pos.contract_address, settings.COOLDOWN_HOURS)
+                # Cooldown removed — trust conviction score for re-entry
                 actions.append(action)
                 continue
             # Activate trailing if gain is sufficient and not already active
@@ -327,7 +328,7 @@ async def check_positions(
                     int(pos.entry_token_amount), pos.entry_sol,
                     current_value, pnl_pct, "max_hold_exceeded",
                 )
-                await db.set_cooldown(pos.contract_address, settings.COOLDOWN_HOURS)
+                # Cooldown removed — trust conviction score for re-entry
                 actions.append(action)
                 continue
 

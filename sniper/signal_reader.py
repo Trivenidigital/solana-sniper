@@ -71,13 +71,16 @@ async def filter_actionable(
     signals: list[Signal],
     db: Database,
     settings: Settings,
-) -> list[Signal]:
+) -> tuple[list[Signal], list[str]]:
     """Filter signals to only actionable ones.
 
     Removes signals where:
     - We already have an open position for this token
     - Liquidity is too low
     - Token is older than MAX_TOKEN_AGE_DAYS
+
+    Returns:
+        (actionable_signals, skipped_descriptions)
     """
     actionable: list[Signal] = []
     skipped_signals: list[str] = []
