@@ -10,7 +10,7 @@ import structlog
 from solana.rpc.async_api import AsyncClient
 
 from sniper.config import Settings
-from sniper.copy_trader import monitor_wallets, smart_money_signals, prune_stale_signals, _signals_lock
+from sniper.copy_trader import monitor_wallets, smart_money_signals, prune_stale_signals, signals_lock
 from sniper.dashboard import print_dashboard
 from sniper.db import Database
 from sniper.executor import execute_buy, execute_buy_split
@@ -189,7 +189,7 @@ async def main() -> None:
 
                             # Conviction-weighted sizing (boost if smart money detected)
                             conviction = sig_data.conviction_score or 30
-                            async with _signals_lock:
+                            async with signals_lock:
                                 sm = smart_money_signals.get(sig_data.contract_address)
                             if sm is not None:
                                 wallet_count = sm["count"]

@@ -8,6 +8,7 @@ from sniper.copy_trader import (
     SWAP_PATTERNS,
     _is_swap_transaction,
     _extract_bought_token,
+    _backfill_after_reconnect,
     _write_injection,
     _get_tracked_wallets,
     _record_signal,
@@ -175,3 +176,50 @@ class TestWriteInjection:
         row = await cursor.fetchone()
         assert row[0] == 1
         await conn.close()
+
+
+class TestBackfill:
+    @pytest.mark.asyncio
+    async def test_skips_old_transactions(self):
+        """Transactions older than BACKFILL_MAX_MINUTES should be skipped."""
+        import time as _time
+        settings = _settings(BACKFILL_MAX_MINUTES=30)
+
+        old_ts = int(_time.time()) - 3600  # 60 min ago
+        recent_ts = int(_time.time()) - 60  # 1 min ago
+
+        mock_response = [
+            {"signature": "old_tx", "timestamp": old_ts, "tokenTransfers": [
+                {"mint": "old_token", "toUserAccount": "wallet1"}
+            ]},
+            {"signature": "new_tx", "timestamp": recent_ts, "tokenTransfers": [
+                {"mint": "new_token", "toUserAccount": "wallet1"}
+            ]},
+        ]
+
+        with patch("sniper.copy_trader.aiohttp.ClientSession") as MockSession:
+            mock_resp = AsyncMock()
+            mock_resp.status = 200
+            mock_resp.json = AsyncMock(return_value=mock_response)
+
+            # session.get() returns a context manager
+            get_cm = MagicMock()
+            get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+            get_cm.__aexit__ = AsyncMock(return_value=False)
+
+            mock_session = MagicMock()
+            mock_session.get = MagicMock(return_value=get_cm)
+
+            # ClientSession() returns a context manager
+            session_cm = MagicMock()
+            session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+            session_cm.__aexit__ = AsyncMock(return_value=False)
+            MockSession.return_value = session_cm
+
+            mock_conn = AsyncMock()
+            smart_money_signals.clear()
+            last_sigs: dict[str, str] = {}
+            await _backfill_after_reconnect(["wallet1"], settings, last_sigs, mock_conn)
+
+            assert "new_token" in smart_money_signals
+            assert "old_token" not in smart_money_signals

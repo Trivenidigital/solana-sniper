@@ -20,7 +20,7 @@ from sniper.config import Settings
 
 logger = structlog.get_logger()
 
-_signals_lock = asyncio.Lock()
+signals_lock = asyncio.Lock()
 
 SWAP_PATTERNS = [
     "Instruction: Route",
@@ -51,7 +51,7 @@ def _is_swap_transaction(logs: list[str]) -> bool:
 
 async def _record_signal(token_mint: str, wallet: str) -> None:
     now = datetime.now(timezone.utc)
-    async with _signals_lock:
+    async with signals_lock:
         if token_mint in smart_money_signals:
             smart_money_signals[token_mint]["wallets"].add(wallet)
             smart_money_signals[token_mint]["count"] = len(smart_money_signals[token_mint]["wallets"])
@@ -64,7 +64,7 @@ async def _record_signal(token_mint: str, wallet: str) -> None:
 
 async def prune_stale_signals(max_age_minutes: int = 60) -> None:
     now = datetime.now(timezone.utc)
-    async with _signals_lock:
+    async with signals_lock:
         stale = [k for k, v in smart_money_signals.items()
                  if (now - v["detected_at"]).total_seconds() > max_age_minutes * 60]
         for k in stale:
@@ -175,6 +175,9 @@ async def _backfill_after_reconnect(
                     f"https://api.helius.xyz/v0/addresses/{wallet}/transactions"
                     f"?api-key={settings.HELIUS_API_KEY}&limit=20&type=SWAP"
                 )
+                last_sig = last_signatures.get(wallet)
+                if last_sig:
+                    url += f"&before={last_sig}"
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status != 200:
                         continue
@@ -207,9 +210,20 @@ async def monitor_wallets(settings: Settings, buy_callback, send_telegram_fn=Non
     if not tracked:
         raise ValueError("COPY_TRADE_ENABLED=true but SMART_MONEY_WALLETS is empty.")
     scout_db_conn = await _open_scout_db_writer(settings)
+    sniper_db = await aiosqlite.connect(str(settings.SNIPER_DB_PATH))
+    await sniper_db.execute("PRAGMA busy_timeout=5000")
+    await sniper_db.execute("""
+        CREATE TABLE IF NOT EXISTS kv_store (
+            key TEXT PRIMARY KEY, value TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    await sniper_db.commit()
     try:
         ws_url = f"wss://mainnet.helius-rpc.com/?api-key={settings.HELIUS_API_KEY}"
-        last_signatures: dict[str, str] = {}
+        # Load persisted last_signatures
+        row = await (await sniper_db.execute("SELECT value FROM kv_store WHERE key = 'last_signatures'")).fetchone()
+        last_signatures: dict[str, str] = json.loads(row[0]) if row else {}
         last_injection_time = datetime.now(timezone.utc)
         logger.info("Copy trading started", wallets=len(tracked))
         async with aiohttp.ClientSession() as helius_session:
@@ -238,6 +252,11 @@ async def monitor_wallets(settings: Settings, buy_callback, send_telegram_fn=Non
                             pass
                         logger.info("WebSocket connected", subs=confirmed, total=len(tracked))
                         await _backfill_after_reconnect(tracked, settings, last_signatures, scout_db_conn)
+                        await sniper_db.execute(
+                            "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES ('last_signatures', ?, CURRENT_TIMESTAMP)",
+                            (json.dumps(last_signatures),),
+                        )
+                        await sniper_db.commit()
 
                         async def _heartbeat_check():
                             nonlocal last_injection_time
@@ -268,6 +287,7 @@ async def monitor_wallets(settings: Settings, buy_callback, send_telegram_fn=Non
                                     token_mint = await _extract_bought_token(
                                         signature, wallet or "", settings, helius_session,
                                     )
+                                    await asyncio.sleep(0.5)  # Rate limit Helius REST calls
                                     if token_mint:
                                         await _record_signal(token_mint, wallet or "unknown")
                                         last_injection_time = datetime.now(timezone.utc)
@@ -291,6 +311,7 @@ async def monitor_wallets(settings: Settings, buy_callback, send_telegram_fn=Non
                         except asyncio.CancelledError:
                             pass
     finally:
+        await sniper_db.close()
         await scout_db_conn.close()
 
 
