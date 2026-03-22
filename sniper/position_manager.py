@@ -537,7 +537,12 @@ async def _close_position(
                     "Sell failed 5x but position still has value — keeping open",
                     token=token_name, value_sol=current_value, entry_sol=entry_sol,
                 )
-                # Reset counter in DB — we'll retry later
+                # Reset counter so we retry fresh next cycle
+                if position_id:
+                    await db._conn.execute(
+                        "UPDATE positions SET sell_fail_count = 0 WHERE id = ?", (position_id,)
+                    )
+                    await db._conn.commit()
                 return f"RETRY {reason}: {token_name} (still has value {current_value:.4f} SOL)"
 
             logger.warning(
