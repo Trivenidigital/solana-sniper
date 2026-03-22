@@ -240,7 +240,7 @@ Instead of storing signals only in module-level dict:
 1. Write to `smart_money_injections` table in scout DB (for Direction 2) using `INSERT OR IGNORE`
 2. Keep in-memory dict for sniper's own conviction boost (for tokens already in pipeline)
 3. Signals persist across restarts
-4. **In-memory dict lifecycle:** Prune entries older than 60 minutes (increased from 30 min to account for slow scout cycles). This dict is a cache for fast conviction lookup — the DB is the source of truth.
+4. **In-memory dict lifecycle:** Prune entries older than `max(60, BACKFILL_MAX_MINUTES)` minutes. This ensures backfilled entries always survive long enough to be useful for conviction boosting. The DB is the source of truth — the in-memory dict is a fast-lookup cache only.
 
 **Connection management:** Sniper needs a new read-write connection to scout DB (separate from the read-only `signal_reader.py` connection). Initialize in `main.py` as `scout_db_writer`, pass to `copy_trader.py`.
 
@@ -267,7 +267,7 @@ Update `main.py` conviction boost logic:
 
 ```python
 # Current: flat +20 if token in smart_money_signals
-# New: +20 per unique wallet, capped at +60
+# New: +20 per unique wallet, capped at SMART_MONEY_BOOST_CAP (default 80)
 if sig_data.contract_address in smart_money_signals:
     sm = smart_money_signals[sig_data.contract_address]
     wallet_count = sm["count"]
@@ -310,7 +310,7 @@ These fixes are prerequisites — we build on top of them.
 | `sniper/config.py` | Add `SMART_MONEY_WALLETS`, remove `TRADING_DEAD_HOURS` |
 | `sniper/copy_trader.py` | Full rebuild: DEX coverage, heartbeat, backfill, multi-wallet tracking, write to scout DB |
 | `sniper/signal_reader.py` | Remove dead hours filter |
-| `sniper/main.py` | Graduated conviction boost (+20/wallet, cap +60); init `scout_db_writer` connection for copy_trader |
+| `sniper/main.py` | Graduated conviction boost (+20/wallet, cap 80 default); init `scout_db_writer` connection for copy_trader |
 | `sniper/db.py` | Enable WAL mode + busy_timeout |
 
 ---
