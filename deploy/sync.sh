@@ -40,8 +40,8 @@ ssh "$VPS" "
       ON vol_gate_snapshots (contract_address, recorded_at DESC);
   ' 2>/dev/null || true
 
-  # Scout: smart_money_injections table
-  sqlite3 /opt/scout/scout.db '
+  # Injections DB (shared between sniper writes + scout reads — separate from scout.db)
+  sqlite3 /opt/scout/injections.db '
     CREATE TABLE IF NOT EXISTS smart_money_injections (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       token_mint TEXT NOT NULL,
@@ -112,8 +112,10 @@ ERRORS=$(ssh "$VPS" "
   # Check DB integrity
   SCOUT_DB_OK=\$(sqlite3 /opt/scout/scout.db 'PRAGMA integrity_check;' 2>/dev/null || echo 'CORRUPT')
   SNIPER_DB_OK=\$(sqlite3 /opt/sniper/sniper.db 'PRAGMA integrity_check;' 2>/dev/null || echo 'CORRUPT')
+  INJ_DB_OK=\$(sqlite3 /opt/scout/injections.db 'PRAGMA integrity_check;' 2>/dev/null || echo 'CORRUPT')
   if [ \"\$SCOUT_DB_OK\" != 'ok' ]; then echo 'FAIL: Scout DB corrupt'; FAILED=1; fi
   if [ \"\$SNIPER_DB_OK\" != 'ok' ]; then echo 'FAIL: Sniper DB corrupt'; FAILED=1; fi
+  if [ \"\$INJ_DB_OK\" != 'ok' ]; then echo 'FAIL: Injections DB corrupt'; FAILED=1; fi
 
   # Check dashboard responds
   DASH_OK=\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080 2>/dev/null || echo '000')

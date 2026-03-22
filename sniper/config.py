@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # Scout DB (read-only)
     SCOUT_DB_PATH: Path = Path("../coinpump-scout/scout.db")
 
+    # Injections DB (shared with scout — sniper inserts, scout marks processed)
+    INJECTIONS_DB_PATH: str = "/opt/scout/injections.db"
+
     # Sniper DB (read-write)
     SNIPER_DB_PATH: Path = Path("sniper.db")
 
