@@ -309,6 +309,15 @@ class Database:
         row = await cursor.fetchone()
         return row[0] if row else 0
 
+    async def reset_sell_fail(self, position_id: int) -> None:
+        """Reset sell fail count to 0 (for retry after position still has value)."""
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        await self._conn.execute(
+            "UPDATE positions SET sell_fail_count = 0 WHERE id = ?", (position_id,)
+        )
+        await self._conn.commit()
+
     async def mark_dca_completed(self, position_id: int) -> None:
         if self._conn is None:
             raise RuntimeError("Database not initialized.")

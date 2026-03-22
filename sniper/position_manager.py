@@ -539,10 +539,7 @@ async def _close_position(
                 )
                 # Reset counter so we retry fresh next cycle
                 if position_id:
-                    await db._conn.execute(
-                        "UPDATE positions SET sell_fail_count = 0 WHERE id = ?", (position_id,)
-                    )
-                    await db._conn.commit()
+                    await db.reset_sell_fail(position_id)
                 return f"RETRY {reason}: {token_name} (still has value {current_value:.4f} SOL)"
 
             logger.warning(
