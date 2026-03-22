@@ -362,6 +362,37 @@ async def main() -> None:
                             except Exception as e:
                                 logger.debug("Bundle check failed", error=str(e))
 
+                            # Helius-based bundle detection (check if early buyers share funding source)
+                            try:
+                                from sniper.bundle_check import check_bundle
+                                bundle = await check_bundle(sig_data.contract_address, session, settings)
+                                if bundle["is_bundled"]:
+                                    logger.warning(
+                                        "Helius bundle detected — early buyers share funding source",
+                                        token=sig_data.token_name,
+                                        bundle_pct=f"{bundle['bundle_pct']:.0f}%",
+                                        early_buyers=bundle["early_buyers"],
+                                        same_block=bundle["same_block_buyers"],
+                                        funder=bundle["top_funder"][:15],
+                                    )
+                                    await send_telegram(
+                                        f"Blocked — bundled launch detected\n"
+                                        f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
+                                        f"Bundle: {bundle['bundle_pct']:.0f}% of early buyers from same funder\n"
+                                        f"Early buyers: {bundle['early_buyers']} | Same block: {bundle['same_block_buyers']}",
+                                        settings,
+                                    )
+                                    continue
+                                elif bundle["early_buyers"] > 0:
+                                    logger.info(
+                                        "Bundle check passed",
+                                        token=sig_data.token_name,
+                                        bundle_pct=f"{bundle['bundle_pct']:.0f}%",
+                                        early_buyers=bundle["early_buyers"],
+                                    )
+                            except Exception as e:
+                                logger.debug("Helius bundle check failed", error=str(e))
+
                             # Fallback: GoPlus (works for non-pump tokens)
                             if not safety_passed:
                                 try:
