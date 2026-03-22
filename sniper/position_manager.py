@@ -16,11 +16,7 @@ from sniper.telegram_notify import send_telegram
 
 logger = structlog.get_logger()
 
-# Track consecutive sell failures per position to force-close unsellable tokens
-_sell_fail_counts: dict[str, int] = {}
 
-# Track which positions have had DCA (per-cycle, avoids reusing partial_exit_done)
-_dca_done_positions: set[int] = set()
 
 
 async def _fetch_position_data(
@@ -270,6 +266,22 @@ async def check_positions(
                 )
                 actions.append(action)
                 continue
+            elif pnl_pct <= -35:
+                # Soft stop-loss in protection phase — not a rug but too much loss
+                logger.warning(
+                    "Soft stop-loss in protection phase",
+                    token=pos.token_name,
+                    pnl_pct=f"{pnl_pct:.1f}%",
+                    age_minutes=f"{age_minutes:.1f}",
+                )
+                action = await _close_position(
+                    db, client, keypair, session, settings,
+                    pos.id, pos.contract_address, pos.token_name,
+                    int(pos.entry_token_amount), pos.entry_sol,
+                    current_value, pnl_pct, "stop_loss",
+                )
+                actions.append(action)
+                continue
             else:
                 logger.debug(
                     "Phase 1 (protection)",
@@ -315,7 +327,7 @@ async def check_positions(
                 sell_ratio_dca = sell_ratio  # reuse sell_ratio from _fetch_position_data
                 if sell_ratio_dca is not None and sell_ratio_dca < 0.5:
                     # Only DCA once per position
-                    if pos.id not in _dca_done_positions:
+                    if pos.dca_completed == 0:
                         logger.info("DCA opportunity", token=pos.token_name, pnl=f"{pnl_pct:.1f}%")
                         try:
                             dca_amount = pos.entry_sol * 0.5  # Buy half the original size
@@ -328,7 +340,7 @@ async def check_positions(
                             await db.update_dca_entry(pos.id, new_entry, new_tokens)
                             pos.entry_sol = new_entry
                             pos.entry_token_amount = new_tokens
-                            _dca_done_positions.add(pos.id)
+                            await db.mark_dca_completed(pos.id)
                             actions.append(f"DCA: {pos.token_name} added {dca_amount} SOL")
                         except Exception as e:
                             logger.warning("DCA buy failed", token=pos.token_name, error=str(e))
@@ -513,12 +525,11 @@ async def _close_position(
     except Exception as e:
         logger.error(f"Failed to close position ({reason})", token=token_name, error=str(e))
 
-        # Track sell failures — force close in DB after 3 failed attempts
+        # Track sell failures — force close in DB after 5 failed attempts
         # to prevent dead positions from blocking new trades
-        fail_key = f"sell_fail_{position_id}"
-        _sell_fail_counts[fail_key] = _sell_fail_counts.get(fail_key, 0) + 1
+        fail_count = await db.increment_sell_fail(position_id) if position_id else 1
 
-        if _sell_fail_counts[fail_key] >= 5:
+        if fail_count >= 5:
             # Only force-close if position is actually worthless (< 5% of entry)
             # Don't kill profitable positions just because Jupiter routing fails
             if current_value is not None and current_value > entry_sol * 0.05:
@@ -526,7 +537,7 @@ async def _close_position(
                     "Sell failed 5x but position still has value — keeping open",
                     token=token_name, value_sol=current_value, entry_sol=entry_sol,
                 )
-                _sell_fail_counts[fail_key] = 0  # Reset counter, try again later
+                # Reset counter in DB — we'll retry later
                 return f"RETRY {reason}: {token_name} (still has value {current_value:.4f} SOL)"
 
             logger.warning(
@@ -553,7 +564,6 @@ async def _close_position(
                 f"Loss: -{entry_sol:.4f} SOL",
                 settings,
             )
-            del _sell_fail_counts[fail_key]
             return f"FORCE_CLOSED unsellable: {token_name} (-{entry_sol:.4f} SOL)"
 
         return f"FAILED {reason}: {token_name} — {e}"

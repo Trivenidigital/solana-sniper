@@ -57,8 +57,8 @@ async def test_close_position(db):
 
 
 async def test_count_and_exposure(db):
-    await db.open_position(_make_position(entry_sol=0.1))
-    await db.open_position(_make_position(contract_address="Token2", entry_sol=0.2))
+    await db.open_position(_make_position(entry_sol=0.1, paper=False))
+    await db.open_position(_make_position(contract_address="Token2", entry_sol=0.2, paper=False))
 
     assert await db.count_open_positions() == 2
     assert await db.get_total_exposure_sol() == pytest.approx(0.3)

@@ -89,6 +89,8 @@ class Database:
             ("trailing_active", "INTEGER DEFAULT 0"),
             ("partial_exit_done", "INTEGER DEFAULT 0"),
             ("partial_exit_tier", "INTEGER DEFAULT 0"),
+            ("sell_fail_count", "INTEGER DEFAULT 0"),
+            ("dca_completed", "INTEGER DEFAULT 0"),
         ]:
             try:
                 await self._conn.execute(
@@ -164,7 +166,7 @@ class Database:
         if self._conn is None:
             raise RuntimeError("Database not initialized.")
         cursor = await self._conn.execute(
-            "SELECT COUNT(*) FROM positions WHERE status='open'"
+            "SELECT COUNT(*) FROM positions WHERE status='open' AND paper=0"
         )
         row = await cursor.fetchone()
         return row[0] if row else 0
@@ -295,6 +297,24 @@ class Database:
         )
         await self._conn.commit()
 
+    async def increment_sell_fail(self, position_id: int) -> int:
+        """Increment sell fail count, return new count."""
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        await self._conn.execute(
+            "UPDATE positions SET sell_fail_count = sell_fail_count + 1 WHERE id = ?", (position_id,)
+        )
+        await self._conn.commit()
+        cursor = await self._conn.execute("SELECT sell_fail_count FROM positions WHERE id = ?", (position_id,))
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def mark_dca_completed(self, position_id: int) -> None:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        await self._conn.execute("UPDATE positions SET dca_completed = 1 WHERE id = ?", (position_id,))
+        await self._conn.commit()
+
     async def update_dca_entry(self, position_id: int, new_entry_sol: float, new_token_amount: float) -> None:
         """Update position entry after DCA buy. Does NOT touch partial_exit_tier."""
         if self._conn is None:
@@ -336,6 +356,8 @@ class Database:
         d["trailing_active"] = bool(d.get("trailing_active", 0))
         d["partial_exit_done"] = bool(d.get("partial_exit_done", 0))
         d["partial_exit_tier"] = int(d.get("partial_exit_tier", 0))
+        d["sell_fail_count"] = int(d.get("sell_fail_count", 0))
+        d["dca_completed"] = int(d.get("dca_completed", 0))
         if d.get("opened_at"):
             d["opened_at"] = datetime.fromisoformat(d["opened_at"])
         if d.get("closed_at"):
