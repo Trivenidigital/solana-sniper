@@ -118,16 +118,15 @@ class Settings(BaseSettings):
     JITO_ENABLED: bool = False  # Enable for MEV-protected transactions
     JITO_TIP_LAMPORTS: int = 100000  # Tip amount (0.0001 SOL default)
 
-    # Trading dead hours (skip signals during these UTC hours)
-    TRADING_DEAD_HOURS: str = "2,3,4,5,6"
-
     # DCA on dip (risky — disabled by default)
     DCA_ENABLED: bool = False
 
-    # Copy Trading (score boost mode)
+    # Smart money / copy trading
     COPY_TRADE_ENABLED: bool = False
-    COPY_TRADE_WALLETS: str = ""  # Comma-separated wallet addresses to track
-    COPY_TRADE_SCORE_BOOST: int = 20  # Conviction boost when smart money buys
+    SMART_MONEY_WALLETS: str = ""  # Comma-separated tracked wallet addresses (shared with scout)
+    COPY_TRADE_SCORE_BOOST: int = 20  # Conviction boost per wallet
+    SMART_MONEY_BOOST_CAP: int = 80  # Max total boost from smart wallets
+    BACKFILL_MAX_MINUTES: int = 30  # Max age for reconnect backfill
     HELIUS_API_KEY: str = ""  # Required for copy trading WebSocket
 
     # Dashboard API key (required for /api/trade endpoint)

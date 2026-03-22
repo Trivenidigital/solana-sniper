@@ -15,9 +15,6 @@ from sniper.config import Settings
 
 logger = structlog.get_logger()
 
-# Default smart money wallets to track (can be extended via config)
-DEFAULT_TRACKED_WALLETS = []
-
 # Tokens detected by copy trader — scanner checks this and boosts score
 # Format: {contract_address: {"wallet": str, "detected_at": datetime}}
 smart_money_signals: dict[str, dict] = {}
@@ -159,11 +156,10 @@ def _find_wallet_in_logs(logs: list, tracked: list) -> str | None:
 
 
 def _get_tracked_wallets(settings: Settings) -> list[str]:
-    """Get list of wallet addresses to track."""
-    wallets = list(DEFAULT_TRACKED_WALLETS)
-    if settings.COPY_TRADE_WALLETS:
-        wallets.extend(w.strip() for w in settings.COPY_TRADE_WALLETS.split(",") if w.strip())
-    return wallets
+    """Get list of wallet addresses to track from shared config."""
+    if not settings.SMART_MONEY_WALLETS:
+        return []
+    return [w.strip() for w in settings.SMART_MONEY_WALLETS.split(",") if w.strip()]
 
 
 async def get_wallet_recent_trades(wallet: str, settings: Settings) -> list[dict]:
