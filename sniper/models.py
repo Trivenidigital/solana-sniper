@@ -53,6 +53,8 @@ class Position(BaseModel):
     trailing_active: bool = False
     partial_exit_done: bool = False
     partial_exit_tier: int = 0
+    sell_fail_count: int = 0
+    dca_completed: int = 0
 
 
 class JupiterQuote(BaseModel):

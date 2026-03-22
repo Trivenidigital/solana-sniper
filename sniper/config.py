@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # Scout DB (read-only)
     SCOUT_DB_PATH: Path = Path("../coinpump-scout/scout.db")
 
+    # Injections DB (shared with scout — sniper inserts, scout marks processed)
+    INJECTIONS_DB_PATH: str = "/opt/scout/injections.db"
+
     # Sniper DB (read-write)
     SNIPER_DB_PATH: Path = Path("sniper.db")
 
@@ -100,7 +103,7 @@ class Settings(BaseSettings):
     PROFIT_LADDER_PCT: float = 50.0
 
     # Sell pressure monitoring
-    SELL_PRESSURE_THRESHOLD: float = 0.70
+    SELL_PRESSURE_THRESHOLD: float = 0.80  # 80% sells — only exit if also in loss and >5min held
 
     # Liquidity-adjusted position sizing
     LIQUIDITY_SIZING_ENABLED: bool = True

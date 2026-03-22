@@ -173,8 +173,14 @@ async def main() -> None:
                             last_signal_check,
                             settings.MIN_CONVICTION_SCORE,
                         )
-                        actionable = await filter_actionable(signals, db, settings)
+                        actionable, skipped = await filter_actionable(signals, db, settings)
                         last_signal_check = now
+
+                        # Notify skipped signals (cooldown, existing position)
+                        if skipped:
+                            skip_msg = "Skipped signals:\n" + "\n".join(f"  {s}" for s in skipped)
+                            logger.info("Signals skipped", count=len(skipped))
+                            await send_telegram(skip_msg, settings)
 
                         for sig_data in actionable:
                             # Pre-trade checks

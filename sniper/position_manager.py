@@ -16,11 +16,7 @@ from sniper.telegram_notify import send_telegram
 
 logger = structlog.get_logger()
 
-# Track consecutive sell failures per position to force-close unsellable tokens
-_sell_fail_counts: dict[str, int] = {}
 
-# Track which positions have had DCA (per-cycle, avoids reusing partial_exit_done)
-_dca_done_positions: set[int] = set()
 
 
 async def _fetch_position_data(
@@ -83,14 +79,19 @@ async def check_positions(
 
     actions: list[str] = []
 
-    # Batch price + sell-pressure check: single DexScreener call per position
+    # Filter out paper positions — user manages these manually
+    active_positions = [pos for pos in positions if not pos.paper]
+    if len(active_positions) < len(positions):
+        logger.debug("Skipping paper positions", count=len(positions) - len(active_positions))
+
+    # Batch price check: single DexScreener call per active position
     data_tasks = [
         _fetch_position_data(session, pos.contract_address, int(pos.entry_token_amount))
-        for pos in positions
+        for pos in active_positions
     ]
     position_data = await asyncio.gather(*data_tasks, return_exceptions=True)
 
-    for pos, pos_data in zip(positions, position_data):
+    for pos, pos_data in zip(active_positions, position_data):
         # Handle exceptions from gather
         if isinstance(pos_data, Exception):
             logger.warning("Price check raised exception", token=pos.token_name, error=str(pos_data))
@@ -195,10 +196,65 @@ async def check_positions(
 
         # Phase 1: Protection (0-{protection_end} min)
         if age_minutes <= protection_end:
-            if pnl_pct <= -settings.RUG_DETECT_PCT:
+            # Rug detection: use Rugcheck API + Jupiter price verification
+            # NOT DexScreener price — it gives false -99% on some tokens
+            is_rug = False
+            rug_reason = ""
+
+            # Check 1: Rugcheck risk score (creator history, LP issues)
+            try:
+                async with session.get(
+                    f"https://api.rugcheck.xyz/v1/tokens/{pos.contract_address}/report/summary",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    if resp.status == 200:
+                        rc_data = await resp.json()
+                        risk_score = rc_data.get("score", 0)
+                        risks = rc_data.get("risks", [])
+                        risk_names = [r.get("name", "") if isinstance(r, dict) else str(r) for r in risks]
+
+                        # High risk: creator rugged before, or LP unlocked with high concentration
+                        if risk_score >= 10000:
+                            is_rug = True
+                            rug_reason = f"Rugcheck risk={risk_score}: {', '.join(risk_names[:3])}"
+                        elif any("rug" in r.lower() for r in risk_names):
+                            is_rug = True
+                            rug_reason = f"Creator history of rugs: {', '.join(risk_names[:3])}"
+            except Exception:
+                pass  # Rugcheck unavailable — don't false-positive
+
+            # Check 2: Verify actual price via Jupiter (not DexScreener)
+            if not is_rug and pnl_pct <= -settings.RUG_DETECT_PCT:
+                from sniper.executor import get_current_value_sol
+                jupiter_value = await get_current_value_sol(
+                    session, pos.contract_address, int(pos.entry_token_amount), settings,
+                )
+                if jupiter_value is not None:
+                    real_pnl = ((jupiter_value - pos.entry_sol) / pos.entry_sol) * 100
+                    if real_pnl <= -settings.RUG_DETECT_PCT:
+                        is_rug = True
+                        rug_reason = f"Jupiter confirms -{abs(real_pnl):.0f}% drop"
+                        current_value = jupiter_value
+                        pnl_pct = real_pnl
+                    else:
+                        logger.info(
+                            "DexScreener false alarm — Jupiter shows token is fine",
+                            token=pos.token_name,
+                            dexscreener_pnl=f"{pnl_pct:.1f}%",
+                            jupiter_pnl=f"{real_pnl:.1f}%",
+                        )
+                        current_value = jupiter_value
+                        pnl_pct = real_pnl
+                elif pnl_pct <= -90:
+                    # Can't get Jupiter quote at all — probably truly dead
+                    is_rug = True
+                    rug_reason = "No Jupiter quote available — token likely dead"
+
+            if is_rug:
                 logger.warning(
                     "Rug detected in protection phase",
                     token=pos.token_name,
+                    reason=rug_reason,
                     pnl_pct=f"{pnl_pct:.1f}%",
                     age_minutes=f"{age_minutes:.1f}",
                 )
@@ -208,7 +264,22 @@ async def check_positions(
                     int(pos.entry_token_amount), pos.entry_sol,
                     current_value, pnl_pct, "rug_detected",
                 )
-                await db.set_cooldown(pos.contract_address, settings.COOLDOWN_HOURS)
+                actions.append(action)
+                continue
+            elif pnl_pct <= -35:
+                # Soft stop-loss in protection phase — not a rug but too much loss
+                logger.warning(
+                    "Soft stop-loss in protection phase",
+                    token=pos.token_name,
+                    pnl_pct=f"{pnl_pct:.1f}%",
+                    age_minutes=f"{age_minutes:.1f}",
+                )
+                action = await _close_position(
+                    db, client, keypair, session, settings,
+                    pos.id, pos.contract_address, pos.token_name,
+                    int(pos.entry_token_amount), pos.entry_sol,
+                    current_value, pnl_pct, "stop_loss",
+                )
                 actions.append(action)
                 continue
             else:
@@ -234,7 +305,7 @@ async def check_positions(
                     int(pos.entry_token_amount), pos.entry_sol,
                     current_value, pnl_pct, "momentum_lost",
                 )
-                await db.set_cooldown(pos.contract_address, settings.COOLDOWN_HOURS)
+                # Cooldown removed — trust conviction score for re-entry
                 actions.append(action)
                 continue
             elif pnl_pct >= settings.TRAILING_ACTIVATE_PCT and not pos.trailing_active and pos.id is not None:
@@ -256,7 +327,7 @@ async def check_positions(
                 sell_ratio_dca = sell_ratio  # reuse sell_ratio from _fetch_position_data
                 if sell_ratio_dca is not None and sell_ratio_dca < 0.5:
                     # Only DCA once per position
-                    if pos.id not in _dca_done_positions:
+                    if pos.dca_completed == 0:
                         logger.info("DCA opportunity", token=pos.token_name, pnl=f"{pnl_pct:.1f}%")
                         try:
                             dca_amount = pos.entry_sol * 0.5  # Buy half the original size
@@ -269,7 +340,7 @@ async def check_positions(
                             await db.update_dca_entry(pos.id, new_entry, new_tokens)
                             pos.entry_sol = new_entry
                             pos.entry_token_amount = new_tokens
-                            _dca_done_positions.add(pos.id)
+                            await db.mark_dca_completed(pos.id)
                             actions.append(f"DCA: {pos.token_name} added {dca_amount} SOL")
                         except Exception as e:
                             logger.warning("DCA buy failed", token=pos.token_name, error=str(e))
@@ -290,7 +361,7 @@ async def check_positions(
                     int(pos.entry_token_amount), pos.entry_sol,
                     current_value, pnl_pct, "pump_window_expired",
                 )
-                await db.set_cooldown(pos.contract_address, settings.COOLDOWN_HOURS)
+                # Cooldown removed — trust conviction score for re-entry
                 actions.append(action)
                 continue
             # Activate trailing if gain is sufficient and not already active
@@ -323,32 +394,14 @@ async def check_positions(
                     int(pos.entry_token_amount), pos.entry_sol,
                     current_value, pnl_pct, "max_hold_exceeded",
                 )
-                await db.set_cooldown(pos.contract_address, settings.COOLDOWN_HOURS)
+                # Cooldown removed — trust conviction score for re-entry
                 actions.append(action)
                 continue
 
-        # --- Sell pressure check (using data from batch fetch) ---
-        if sell_ratio is not None:
-            logger.debug(
-                "Sell pressure",
-                token=pos.token_name,
-                sell_ratio=f"{sell_ratio:.2f}",
-            )
-            if sell_ratio > settings.SELL_PRESSURE_THRESHOLD:
-                logger.warning(
-                    "High sell pressure detected — force closing",
-                    token=pos.token_name,
-                    sell_ratio=f"{sell_ratio:.2f}",
-                    threshold=settings.SELL_PRESSURE_THRESHOLD,
-                )
-                action = await _close_position(
-                    db, client, keypair, session, settings,
-                    pos.id, pos.contract_address, pos.token_name,
-                    int(pos.entry_token_amount), pos.entry_sol,
-                    current_value, pnl_pct, "sell_pressure",
-                )
-                actions.append(action)
-                continue
+        # Sell pressure check removed — DexScreener's m5 sell ratio reflects overall
+        # market activity, not activity since our entry. This caused false exits
+        # (e.g., entering after a 70% correction still showed 70% sell ratio).
+        # Price-based exits (stop loss, momentum loss, trailing stop) handle this better.
 
         logger.debug(
             "Position check",
@@ -472,12 +525,11 @@ async def _close_position(
     except Exception as e:
         logger.error(f"Failed to close position ({reason})", token=token_name, error=str(e))
 
-        # Track sell failures — force close in DB after 3 failed attempts
+        # Track sell failures — force close in DB after 5 failed attempts
         # to prevent dead positions from blocking new trades
-        fail_key = f"sell_fail_{position_id}"
-        _sell_fail_counts[fail_key] = _sell_fail_counts.get(fail_key, 0) + 1
+        fail_count = await db.increment_sell_fail(position_id) if position_id else 1
 
-        if _sell_fail_counts[fail_key] >= 5:
+        if fail_count >= 5:
             # Only force-close if position is actually worthless (< 5% of entry)
             # Don't kill profitable positions just because Jupiter routing fails
             if current_value is not None and current_value > entry_sol * 0.05:
@@ -485,7 +537,9 @@ async def _close_position(
                     "Sell failed 5x but position still has value — keeping open",
                     token=token_name, value_sol=current_value, entry_sol=entry_sol,
                 )
-                _sell_fail_counts[fail_key] = 0  # Reset counter, try again later
+                # Reset counter so we retry fresh next cycle
+                if position_id:
+                    await db.reset_sell_fail(position_id)
                 return f"RETRY {reason}: {token_name} (still has value {current_value:.4f} SOL)"
 
             logger.warning(
@@ -512,7 +566,6 @@ async def _close_position(
                 f"Loss: -{entry_sol:.4f} SOL",
                 settings,
             )
-            del _sell_fail_counts[fail_key]
             return f"FORCE_CLOSED unsellable: {token_name} (-{entry_sol:.4f} SOL)"
 
         return f"FAILED {reason}: {token_name} — {e}"

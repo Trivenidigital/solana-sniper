@@ -71,16 +71,19 @@ async def filter_actionable(
     signals: list[Signal],
     db: Database,
     settings: Settings,
-) -> list[Signal]:
+) -> tuple[list[Signal], list[str]]:
     """Filter signals to only actionable ones.
 
     Removes signals where:
     - We already have an open position for this token
     - Liquidity is too low
     - Token is older than MAX_TOKEN_AGE_DAYS
-    - Token is on cooldown after a stop-loss
+
+    Returns:
+        (actionable_signals, skipped_descriptions)
     """
     actionable: list[Signal] = []
+    skipped_signals: list[str] = []
     now = datetime.now(timezone.utc)
 
     for signal in signals:
@@ -113,11 +116,11 @@ async def filter_actionable(
         if signal.token_age_days > settings.MAX_TOKEN_AGE_DAYS:
             logger.debug("Token too old", token=signal.token_name, age_days=signal.token_age_days)
             continue
-        if await db.is_on_cooldown(signal.contract_address):
-            logger.debug("Token on cooldown", token=signal.token_name)
-            continue
         existing = await db.get_open_position_by_address(signal.contract_address)
         if existing is not None:
+            skipped_signals.append(
+                f"{signal.token_name} ({signal.ticker}) — already in open position"
+            )
             continue
         actionable.append(signal)
-    return actionable
+    return actionable, skipped_signals

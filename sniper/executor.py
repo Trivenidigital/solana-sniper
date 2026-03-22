@@ -147,18 +147,35 @@ async def execute_buy(
                         slippage_bps=slippage_bps, attempt=attempt + 1)
 
             # Verify transaction succeeded on-chain
-            await asyncio.sleep(2)
-            try:
-                tx_resp = await client.get_transaction(
-                    Signature.from_string(tx_sig),
-                    max_supported_transaction_version=0,
-                )
-                if tx_resp.value and tx_resp.value.transaction.meta.err:
-                    raise TransactionFailedError(f"Transaction landed but swap failed: {tx_sig}")
-            except Exception as verify_err:
-                if "swap failed" in str(verify_err):
+            # Solana TXs can take 10-15s to finalize — wait 5s initially, then 5 retries at 3s
+            await asyncio.sleep(5)
+            for verify_attempt in range(5):
+                try:
+                    tx_resp = await client.get_transaction(
+                        Signature.from_string(tx_sig),
+                        max_supported_transaction_version=0,
+                    )
+                    if tx_resp.value is None:
+                        if verify_attempt < 4:
+                            await asyncio.sleep(3)
+                            continue
+                        raise TransactionFailedError(
+                            f"Transaction not found on-chain after 5 attempts: {tx_sig}"
+                        )
+                    if tx_resp.value.transaction.meta.err:
+                        raise TransactionFailedError(
+                            f"Transaction failed on-chain: {tx_resp.value.transaction.meta.err} TX: {tx_sig}"
+                        )
+                    break  # TX confirmed and no error
+                except TransactionFailedError:
                     raise
-                logger.warning("Could not verify transaction", tx=tx_sig, error=str(verify_err))
+                except Exception as verify_err:
+                    if verify_attempt < 4:
+                        await asyncio.sleep(3)
+                        continue
+                    raise TransactionFailedError(
+                        f"Could not verify transaction: {verify_err} TX: {tx_sig}"
+                    ) from verify_err
 
             return (tx_sig, tokens_received)
 

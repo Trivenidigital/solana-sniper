@@ -154,9 +154,24 @@ def _find_wallet_in_logs(logs: list[str], tracked: list[str]) -> str | None:
 
 
 async def _open_scout_db_writer(settings: Settings) -> aiosqlite.Connection:
-    conn = await aiosqlite.connect(str(settings.SCOUT_DB_PATH))
+    """Open exclusive write connection to the injections DB (separate from scout's main DB)."""
+    conn = await aiosqlite.connect(str(settings.INJECTIONS_DB_PATH))
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute("PRAGMA busy_timeout=5000")
+    await conn.executescript("""
+        CREATE TABLE IF NOT EXISTS smart_money_injections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token_mint TEXT NOT NULL,
+            wallet_address TEXT NOT NULL,
+            tx_signature TEXT,
+            source TEXT DEFAULT 'websocket',
+            detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            processed INTEGER DEFAULT 0,
+            UNIQUE(token_mint, tx_signature)
+        );
+        CREATE INDEX IF NOT EXISTS idx_smi_unprocessed
+            ON smart_money_injections(processed, detected_at);
+    """)
     return conn
 
 
