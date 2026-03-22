@@ -147,19 +147,20 @@ async def execute_buy(
                         slippage_bps=slippage_bps, attempt=attempt + 1)
 
             # Verify transaction succeeded on-chain
-            await asyncio.sleep(2)
-            for verify_attempt in range(3):
+            # Solana TXs can take 10-15s to finalize — wait 5s initially, then 5 retries at 3s
+            await asyncio.sleep(5)
+            for verify_attempt in range(5):
                 try:
                     tx_resp = await client.get_transaction(
                         Signature.from_string(tx_sig),
                         max_supported_transaction_version=0,
                     )
                     if tx_resp.value is None:
-                        if verify_attempt < 2:
-                            await asyncio.sleep(2)
+                        if verify_attempt < 4:
+                            await asyncio.sleep(3)
                             continue
                         raise TransactionFailedError(
-                            f"Transaction not found on-chain after 3 attempts: {tx_sig}"
+                            f"Transaction not found on-chain after 5 attempts: {tx_sig}"
                         )
                     if tx_resp.value.transaction.meta.err:
                         raise TransactionFailedError(
@@ -169,8 +170,8 @@ async def execute_buy(
                 except TransactionFailedError:
                     raise
                 except Exception as verify_err:
-                    if verify_attempt < 2:
-                        await asyncio.sleep(2)
+                    if verify_attempt < 4:
+                        await asyncio.sleep(3)
                         continue
                     raise TransactionFailedError(
                         f"Could not verify transaction: {verify_err} TX: {tx_sig}"
