@@ -66,42 +66,38 @@ class TestTrackedWallets:
 
 
 class TestMultiWalletSignals:
-    def test_accumulates_wallets(self):
+    @pytest.mark.asyncio
+    async def test_accumulates_wallets(self):
         smart_money_signals.clear()
-        _record_signal("mint1", "walletA")
-        _record_signal("mint1", "walletB")
+        await _record_signal("mint1", "walletA")
+        await _record_signal("mint1", "walletB")
         assert smart_money_signals["mint1"]["count"] == 2
         assert "walletA" in smart_money_signals["mint1"]["wallets"]
         assert "walletB" in smart_money_signals["mint1"]["wallets"]
 
-    def test_prune_respects_max_age(self):
+    @pytest.mark.asyncio
+    async def test_prune_respects_max_age(self):
         smart_money_signals.clear()
-        _record_signal("mint1", "walletA")
+        await _record_signal("mint1", "walletA")
         smart_money_signals["mint1"]["detected_at"] = datetime(2020, 1, 1, tzinfo=timezone.utc)
-        prune_stale_signals(max_age_minutes=60)
+        await prune_stale_signals(max_age_minutes=60)
         assert "mint1" not in smart_money_signals
 
 
 class TestExtractBoughtToken:
-    def _mock_helius_session(self, mock_response):
-        """Build a properly nested async-context-manager mock for aiohttp."""
+    def _mock_helius_response(self, mock_response, status=200):
+        """Build a properly nested async-context-manager mock for aiohttp session.post."""
         mock_resp = AsyncMock()
-        mock_resp.status = 200
+        mock_resp.status = status
         mock_resp.json = AsyncMock(return_value=mock_response)
 
-        # session.post(...) returns a context manager (not a coroutine)
         post_cm = AsyncMock()
         post_cm.__aenter__ = AsyncMock(return_value=mock_resp)
         post_cm.__aexit__ = AsyncMock(return_value=False)
 
         mock_session = AsyncMock()
         mock_session.post = MagicMock(return_value=post_cm)
-
-        # ClientSession() returns a context manager
-        session_cm = AsyncMock()
-        session_cm.__aenter__ = AsyncMock(return_value=mock_session)
-        session_cm.__aexit__ = AsyncMock(return_value=False)
-        return session_cm
+        return mock_session
 
     @pytest.mark.asyncio
     async def test_filters_intermediary_mints(self):
@@ -114,9 +110,9 @@ class TestExtractBoughtToken:
             ],
             "nativeTransfers": [{"fromUserAccount": "wallet1", "amount": 1000000}],
         }]
-        with patch("sniper.copy_trader.aiohttp.ClientSession", return_value=self._mock_helius_session(mock_response)):
-            result = await _extract_bought_token("sig", "wallet1", settings)
-            assert result == "actual_token_mint"
+        mock_session = self._mock_helius_response(mock_response)
+        result = await _extract_bought_token("sig", "wallet1", settings, mock_session)
+        assert result == "actual_token_mint"
 
     @pytest.mark.asyncio
     async def test_rejects_airdrop_no_sol_spent(self):
@@ -125,9 +121,17 @@ class TestExtractBoughtToken:
             "tokenTransfers": [{"mint": "airdrop_token", "toUserAccount": "wallet1"}],
             "nativeTransfers": [{"fromUserAccount": "other_wallet", "amount": 1000000}],
         }]
-        with patch("sniper.copy_trader.aiohttp.ClientSession", return_value=self._mock_helius_session(mock_response)):
-            result = await _extract_bought_token("sig", "wallet1", settings)
-            assert result is None
+        mock_session = self._mock_helius_response(mock_response)
+        result = await _extract_bought_token("sig", "wallet1", settings, mock_session)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_accepts_session_parameter(self):
+        """Verify _extract_bought_token accepts an explicit session parameter."""
+        settings = _settings(HELIUS_API_KEY="")
+        mock_session = AsyncMock()
+        result = await _extract_bought_token("sig", "wallet1", settings, mock_session)
+        assert result is None  # Returns None because no API key
 
 
 class TestWriteInjection:

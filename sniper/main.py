@@ -10,7 +10,7 @@ import structlog
 from solana.rpc.async_api import AsyncClient
 
 from sniper.config import Settings
-from sniper.copy_trader import monitor_wallets, smart_money_signals, prune_stale_signals
+from sniper.copy_trader import monitor_wallets, smart_money_signals, prune_stale_signals, _signals_lock
 from sniper.dashboard import print_dashboard
 from sniper.db import Database
 from sniper.executor import execute_buy, execute_buy_split
@@ -148,7 +148,7 @@ async def main() -> None:
                 f"Smart Money Signal\n"
                 f"Token: {token_mint[:20]}...\n"
                 f"Wallet: {source_wallet[:8] + '...' if source_wallet else 'unknown'}\n"
-                f"Score boost: +{settings.COPY_TRADE_SCORE_BOOST} conviction\n"
+                f"Score boost: +{settings.COPY_TRADE_SCORE_BOOST}/wallet conviction\n"
                 f"Token will be prioritized in next scan cycle",
                 settings,
             )
@@ -165,7 +165,7 @@ async def main() -> None:
                     now = datetime.now(timezone.utc)
 
                     # --- Signal check phase ---
-                    prune_stale_signals(max_age_minutes=max(60, settings.BACKFILL_MAX_MINUTES))
+                    await prune_stale_signals(max_age_minutes=max(60, settings.BACKFILL_MAX_MINUTES))
                     elapsed = (now - last_signal_check).total_seconds()
                     if elapsed >= settings.POLL_INTERVAL_SECONDS:
                         signals = await read_new_signals(
@@ -189,8 +189,9 @@ async def main() -> None:
 
                             # Conviction-weighted sizing (boost if smart money detected)
                             conviction = sig_data.conviction_score or 30
-                            if sig_data.contract_address in smart_money_signals:
-                                sm = smart_money_signals[sig_data.contract_address]
+                            async with _signals_lock:
+                                sm = smart_money_signals.get(sig_data.contract_address)
+                            if sm is not None:
                                 wallet_count = sm["count"]
                                 boost = min(
                                     wallet_count * settings.COPY_TRADE_SCORE_BOOST,
