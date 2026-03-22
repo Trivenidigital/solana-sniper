@@ -6,6 +6,13 @@ set -euo pipefail
 
 VPS="${1:-root@149.28.125.16}"
 
+echo "Stopping services for clean deploy..."
+ssh "$VPS" "
+  systemctl stop coinpump-scout solana-sniper sniper-dashboard 2>/dev/null
+  sleep 2
+  echo 'Services stopped'
+"
+
 echo "Syncing scout code..."
 rsync -az --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
   --exclude='*.pyc' --exclude='*.db' --exclude='.env' --exclude='*.xlsx' \
