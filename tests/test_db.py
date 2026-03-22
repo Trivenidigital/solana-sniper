@@ -88,3 +88,15 @@ async def test_log_trade(db):
     pos_id = await db.open_position(_make_position())
     await db.log_trade(pos_id, "buy", 0.1, 1000.0, "paper-tx", None)
     # No assertion needed — just verify it doesn't crash
+
+
+@pytest.mark.asyncio
+async def test_wal_mode_enabled(tmp_path):
+    """Database should use WAL journal mode for concurrent access."""
+    from sniper.db import Database
+    db = Database(tmp_path / "test.db")
+    await db.initialize()
+    cursor = await db._conn.execute("PRAGMA journal_mode")
+    row = await cursor.fetchone()
+    assert row[0] == "wal"
+    await db.close()
