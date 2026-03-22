@@ -18,7 +18,7 @@ from sniper.kelly import calculate_kelly_bet
 from sniper.models import Position
 from sniper.multi_wallet import copy_buy, load_wallets, get_all_balances
 from sniper.position_manager import check_positions, portfolio_summary
-from sniper.safety import check_token_safety
+from sniper.safety import check_token_safety  # GoPlus — fallback when Rugcheck is down
 from sniper.signal_reader import filter_actionable, read_new_signals
 from sniper.telegram_notify import send_telegram
 from sniper.wallet import get_sol_balance, load_keypair
@@ -249,14 +249,64 @@ async def main() -> None:
                                     logger.warning("Insufficient SOL", balance=bal)
                                     break
 
-                            # Anti-rug safety check
-                            is_safe = await check_token_safety(
-                                session, sig_data.contract_address,
-                            )
-                            if not is_safe:
+                            # Pre-buy safety: Rugcheck (primary) → GoPlus (fallback) → fail-closed
+                            safety_passed = False
+                            try:
+                                async with session.get(
+                                    f"https://api.rugcheck.xyz/v1/tokens/{sig_data.contract_address}/report/summary",
+                                    timeout=aiohttp.ClientTimeout(total=5),
+                                ) as rc_resp:
+                                    if rc_resp.status == 200:
+                                        rc_data = await rc_resp.json()
+                                        rc_score = rc_data.get("score", 0)
+                                        rc_risks = rc_data.get("risks", [])
+                                        rc_names = [r.get("name", "") if isinstance(r, dict) else str(r) for r in rc_risks]
+                                        if rc_score >= 10000 or any("rug" in r.lower() for r in rc_names):
+                                            logger.warning(
+                                                "Rugcheck BLOCKED pre-buy",
+                                                token=sig_data.token_name,
+                                                risk_score=rc_score,
+                                                risks=rc_names[:3],
+                                            )
+                                            await send_telegram(
+                                                f"Blocked by Rugcheck\n"
+                                                f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
+                                                f"Risk: {rc_score} — {', '.join(rc_names[:3])}",
+                                                settings,
+                                            )
+                                            continue
+                                        logger.info(
+                                            "Rugcheck passed",
+                                            token=sig_data.token_name,
+                                            risk_score=rc_score,
+                                        )
+                                        safety_passed = True
+                            except Exception as e:
+                                logger.warning("Rugcheck failed, trying GoPlus fallback", error=str(e))
+
+                            # Fallback: GoPlus (works for non-pump tokens)
+                            if not safety_passed:
+                                try:
+                                    is_safe = await check_token_safety(session, sig_data.contract_address)
+                                    if not is_safe:
+                                        logger.warning("GoPlus BLOCKED pre-buy", token=sig_data.token_name)
+                                        continue
+                                    safety_passed = True
+                                    logger.info("GoPlus fallback passed", token=sig_data.token_name)
+                                except Exception:
+                                    pass
+
+                            # If both checks failed (APIs down), don't buy blind
+                            if not safety_passed:
                                 logger.warning(
-                                    "Token failed safety check — skipping",
+                                    "Both safety checks failed — skipping buy",
                                     token=sig_data.token_name,
+                                )
+                                await send_telegram(
+                                    f"Safety check unavailable — skipped\n"
+                                    f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
+                                    f"Both Rugcheck and GoPlus APIs down",
+                                    settings,
                                 )
                                 continue
 
