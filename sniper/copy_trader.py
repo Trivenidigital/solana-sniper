@@ -193,9 +193,14 @@ async def _backfill_after_reconnect(
                         if mint and mint not in INTERMEDIARY_MINTS and transfer.get("toUserAccount") == wallet:
                             token_mint = mint
                     if token_mint:
+                        async with signals_lock:
+                            already_seen = token_mint in smart_money_signals
                         await _record_signal(token_mint, wallet)
-                        await _write_injection(conn, token_mint, wallet, sig, source="backfill")
-                        logger.info("Backfilled signal", wallet=wallet[:8], token=token_mint[:20])
+                        if not already_seen:
+                            await _write_injection(conn, token_mint, wallet, sig, source="backfill")
+                            logger.info("Backfilled signal — NEW", wallet=wallet[:8], token=token_mint[:20])
+                        else:
+                            logger.debug("Backfill re-buy skipped", token=token_mint[:20])
                     if sig:
                         last_signatures[wallet] = sig
                 await asyncio.sleep(0.5)
@@ -289,15 +294,21 @@ async def monitor_wallets(settings: Settings, buy_callback, send_telegram_fn=Non
                                     )
                                     await asyncio.sleep(0.5)  # Rate limit Helius REST calls
                                     if token_mint:
+                                        # Dedup: only inject new tokens, skip re-buys of same token
+                                        async with signals_lock:
+                                            already_seen = token_mint in smart_money_signals
                                         await _record_signal(token_mint, wallet or "unknown")
                                         last_injection_time = datetime.now(timezone.utc)
-                                        await _write_injection(scout_db_conn, token_mint, wallet or "unknown", signature)
-                                        logger.info("Smart money signal",
-                                            wallet=wallet[:8] + "..." if wallet else "unknown",
-                                            token=token_mint[:20],
-                                            wallets=smart_money_signals.get(token_mint, {}).get("count", 1))
-                                        if buy_callback:
-                                            await buy_callback(token_mint, wallet)
+                                        if not already_seen:
+                                            await _write_injection(scout_db_conn, token_mint, wallet or "unknown", signature)
+                                            logger.info("Smart money signal — NEW token",
+                                                wallet=wallet[:8] + "..." if wallet else "unknown",
+                                                token=token_mint[:20])
+                                            if buy_callback:
+                                                await buy_callback(token_mint, wallet)
+                                        else:
+                                            logger.debug("Smart money re-buy skipped",
+                                                token=token_mint[:20])
                             except Exception as e:
                                 logger.debug("WS parse error", error=str(e))
                 except Exception as e:
