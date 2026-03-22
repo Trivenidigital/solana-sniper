@@ -245,9 +245,14 @@ async def main() -> None:
 
                             if not settings.PAPER_MODE:
                                 bal = await get_sol_balance(rpc_client, pubkey)
-                                if bal < buy_amount + 0.01:
+                                max_available = bal - 0.01  # Reserve for gas
+                                if max_available < settings.KELLY_MIN_BET:
                                     logger.warning("Insufficient SOL", balance=bal)
                                     break
+                                if buy_amount > max_available:
+                                    logger.info("Capping buy to available balance",
+                                        original=f"{buy_amount:.4f}", capped=f"{max_available:.4f}")
+                                    buy_amount = max_available
 
                             # Pre-buy safety: Rugcheck (primary) → GoPlus (fallback) → fail-closed
                             safety_passed = False
