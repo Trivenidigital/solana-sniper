@@ -362,10 +362,15 @@ async def main() -> None:
                             except Exception as e:
                                 logger.debug("Bundle check failed", error=str(e))
 
-                            # Helius-based bundle detection (check if early buyers share funding source)
+                            # Helius-based bundle detection — only for fresh tokens (<30 min old)
+                            # Older tokens: bundler already sold, organic holders took over
+                            token_age_hours = sig_data.token_age_days * 24 if sig_data.token_age_days else 0
+                            skip_bundle = token_age_hours > 0.5  # >30 min
+                            if skip_bundle:
+                                logger.debug("Skipping bundle check — token older than 30 min", token=sig_data.token_name)
                             try:
                                 from sniper.bundle_check import check_bundle
-                                bundle = await check_bundle(sig_data.contract_address, session, settings)
+                                bundle = await check_bundle(sig_data.contract_address, session, settings) if not skip_bundle else {"is_bundled": False, "early_buyers": 0}
                                 if bundle["is_bundled"]:
                                     logger.warning(
                                         "Helius bundle detected — early buyers share funding source",
