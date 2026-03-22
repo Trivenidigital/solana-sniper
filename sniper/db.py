@@ -18,6 +18,8 @@ class Database:
     async def initialize(self) -> None:
         self._conn = await aiosqlite.connect(self._db_path)
         self._conn.row_factory = aiosqlite.Row
+        await self._conn.execute("PRAGMA journal_mode=WAL")
+        await self._conn.execute("PRAGMA busy_timeout=5000")
         await self._create_tables()
         await self._migrate_tables()
 
@@ -67,6 +69,12 @@ class Database:
             CREATE TABLE IF NOT EXISTS cooldowns (
                 contract_address TEXT PRIMARY KEY,
                 cooldown_until   TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS kv_store (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             """
         )
@@ -294,6 +302,26 @@ class Database:
         await self._conn.execute(
             "UPDATE positions SET entry_sol=?, entry_token_amount=? WHERE id=?",
             (new_entry_sol, new_token_amount, position_id),
+        )
+        await self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Key-Value store
+    # ------------------------------------------------------------------
+
+    async def kv_get(self, key: str) -> str | None:
+        if self._conn is None:
+            return None
+        cursor = await self._conn.execute("SELECT value FROM kv_store WHERE key = ?", (key,))
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+    async def kv_set(self, key: str, value: str) -> None:
+        if self._conn is None:
+            return
+        await self._conn.execute(
+            "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (key, value),
         )
         await self._conn.commit()
 

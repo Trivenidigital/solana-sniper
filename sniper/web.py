@@ -139,50 +139,62 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Solana Sniper Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
   :root {
-    --bg: #0d1117; --bg2: #161b22; --border: #30363d; --text: #c9d1d9;
-    --muted: #484f58; --label: #8b949e; --blue: #58a6ff; --green: #3fb950;
-    --red: #f85149; --yellow: #d2a828; --purple: #a371f7;
-  }
-  [data-theme="light"] {
-    --bg: #ffffff; --bg2: #f6f8fa; --border: #d0d7de; --text: #1f2328;
-    --muted: #656d76; --label: #636c76; --blue: #0969da; --green: #1a7f37;
-    --red: #cf222e; --yellow: #9a6700; --purple: #8250df;
+    --bg: #0d1117;
+    --bg2: #161b22;
+    --bg-card: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --cyan: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --purple: #bc8cff;
+    --orange: #f0883e;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; }
-  .container { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  .container { max-width: 1280px; margin: 0 auto; padding: 16px; }
 
   /* Header */
-  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
-  .header h1 { color: var(--blue); font-size: 1.3em; }
-  .header-actions { display: flex; gap: 8px; align-items: center; }
-  .theme-btn { background: var(--bg2); border: 1px solid var(--border); color: var(--text); padding: 6px 12px;
-               border-radius: 6px; cursor: pointer; font-size: 0.8em; }
-  .theme-btn:hover { border-color: var(--blue); }
-  .wallet-badge { background: var(--bg2); border: 1px solid var(--border); padding: 6px 12px;
-                  border-radius: 6px; font-size: 0.75em; color: var(--label); }
+  .header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .header h1 { color: var(--cyan); font-size: 1.3em; }
+  .status-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .status-dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .status-dot.disconnected { background: var(--red); box-shadow: 0 0 6px var(--red); }
+  .wallet-badge { margin-left: auto; background: var(--bg2); border: 1px solid var(--border); padding: 6px 12px;
+                  border-radius: 6px; font-size: 0.75em; color: var(--text-muted); }
   .wallet-badge strong { color: var(--green); }
 
-  /* Cards */
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 20px; }
-  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
-  .card .label { color: var(--label); font-size: 0.7em; text-transform: uppercase; letter-spacing: 1px; }
-  .card .value { font-size: 1.4em; font-weight: bold; margin-top: 4px; }
-  .card .sub { font-size: 0.7em; color: var(--muted); margin-top: 2px; }
+  /* Metric Cards */
+  .metrics { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 24px; }
+  .metric-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .metric-card .label { color: var(--text-muted); font-size: 0.65em; text-transform: uppercase; letter-spacing: 1.2px; font-weight: 600; }
+  .metric-card .value { font-size: 1.8rem; font-weight: 700; margin-top: 6px; line-height: 1; }
+  .metric-card .sub { font-size: 0.7em; color: var(--text-muted); margin-top: 4px; }
   .positive { color: var(--green); }
   .negative { color: var(--red); }
-  .neutral { color: var(--blue); }
+  .neutral { color: var(--cyan); }
+  .cb-on { color: var(--red); font-weight: 700; }
+  .cb-off { color: var(--green); font-weight: 700; }
+
+  /* Performance Section */
+  .performance { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; margin-bottom: 24px; }
+  .chart-panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .chart-panel h3 { color: var(--text-muted); font-size: 0.8em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+  .chart-wrap { position: relative; height: 280px; }
 
   /* Sections */
   .section { margin-bottom: 24px; }
-  .section h2 { color: var(--label); font-size: 1em; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
-  .section h2 .badge { background: var(--blue); color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 0.7em; }
+  .section h2 { color: var(--text-muted); font-size: 1em; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .section h2 .badge { background: var(--cyan); color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 0.7em; }
 
   /* Tables */
   table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; padding: 8px 10px; background: var(--bg2); color: var(--label); font-size: 0.7em;
+  th { text-align: left; padding: 8px 10px; background: var(--bg2); color: var(--text-muted); font-size: 0.7em;
        text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid var(--border); position: sticky; top: 0; }
   td { padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 0.82em; }
   tr:hover { background: var(--bg2); }
@@ -191,30 +203,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   /* Tags */
   .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.65em; font-weight: 600; }
   .tag-live { background: #3fb95022; color: var(--green); }
-  .tag-paper { background: #8b949e22; color: var(--label); }
+  .tag-paper { background: #8b949e22; color: var(--text-muted); }
   .tag-sl { background: #f8514922; color: var(--red); }
   .tag-tp { background: #3fb95022; color: var(--green); }
-  .tag-trail { background: #d2a82822; color: var(--yellow); }
-  .tag-closed { background: #8b949e22; color: var(--label); }
-
-  /* Chart */
-  .chart-container { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 20px; }
-  .chart-bar { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
-  .chart-label { width: 120px; font-size: 0.75em; color: var(--label); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .chart-fill { height: 20px; border-radius: 3px; min-width: 2px; transition: width 0.3s; }
-  .chart-value { font-size: 0.7em; color: var(--muted); white-space: nowrap; }
+  .tag-trail { background: #d2992222; color: var(--yellow); }
+  .tag-closed { background: #8b949e22; color: var(--text-muted); }
 
   /* Scanner */
   .scanner-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
   .scanner-item { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
   .scanner-item .name { font-weight: 600; font-size: 0.85em; }
-  .scanner-item .details { font-size: 0.72em; color: var(--label); margin-top: 4px; }
+  .scanner-item .details { font-size: 0.72em; color: var(--text-muted); margin-top: 4px; }
+  .scanner-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 10px; }
+  .scanner-cards .metric-card { padding: 12px; }
+  .scanner-cards .metric-card .value { font-size: 1.4rem; }
 
   /* Trade form */
-  .trade-form { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .trade-form { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
   .form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 10px; }
   .form-group { flex: 1; min-width: 150px; }
-  .form-group label { display: block; font-size: 0.7em; color: var(--label); text-transform: uppercase; margin-bottom: 4px; }
+  .form-group label { display: block; font-size: 0.7em; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px; }
   .form-group input, .form-group select { width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border);
     color: var(--text); border-radius: 6px; font-size: 0.85em; font-family: inherit; }
   .btn { padding: 8px 20px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.85em; }
@@ -229,88 +237,86 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   /* Footer */
   .footer { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--border);
-            color: var(--muted); font-size: 0.7em; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+            color: var(--text-muted); font-size: 0.7em; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 
   /* Mobile */
   @media (max-width: 768px) {
     .container { padding: 10px; }
-    .cards { grid-template-columns: repeat(3, 1fr); }
-    .card .value { font-size: 1.1em; }
-    .header { flex-direction: column; align-items: flex-start; }
+    .metrics { grid-template-columns: repeat(3, 1fr); }
+    .metric-card .value { font-size: 1.2rem; }
+    .performance { grid-template-columns: 1fr; }
+    .header { flex-wrap: wrap; }
+    .wallet-badge { margin-left: 0; }
     .form-row { flex-direction: column; }
     td, th { padding: 6px 8px; font-size: 0.75em; }
-    .chart-label { width: 80px; }
   }
   @media (max-width: 480px) {
-    .cards { grid-template-columns: repeat(2, 1fr); }
+    .metrics { grid-template-columns: repeat(2, 1fr); }
   }
 </style>
 </head>
-<body data-theme="dark">
+<body>
 <div class="container">
 
 <!-- Header -->
 <div class="header">
   <h1>Solana Sniper</h1>
-  <div class="header-actions">
-    <div class="wallet-badge">
-      {{ wallet_pubkey[:8] }}...{{ wallet_pubkey[-4:] }} &bull; <strong>{{ "%.4f"|format(sol_balance) }} SOL</strong>
-      {% if sol_price > 0 %}<span style="color:var(--muted)"> (${{ "%.2f"|format(sol_balance * sol_price) }})</span>{% endif %}
-    </div>
-    <button class="theme-btn" onclick="toggleTheme()">Toggle Theme</button>
+  <div class="status-dot {{ 'connected' if is_connected else 'disconnected' }}"></div>
+  <div class="wallet-badge">
+    {{ wallet_pubkey[:8] }}...{{ wallet_pubkey[-4:] }} &bull; <strong>{{ "%.4f"|format(sol_balance) }} SOL</strong>
+    {% if sol_price > 0 %}<span style="color:var(--text-muted)"> (${{ "%.2f"|format(sol_balance * sol_price) }})</span>{% endif %}
   </div>
 </div>
 
-<!-- Summary Cards -->
-<div class="cards">
-  <div class="card">
-    <div class="label">Open Positions</div>
-    <div class="value neutral">{{ open_count }}</div>
+<!-- Top Metrics Row -->
+<div class="metrics">
+  <div class="metric-card">
+    <div class="label">Net P&amp;L (48H)</div>
+    <div class="value {{ 'positive' if net_pnl_usd >= 0 else 'negative' }}">${{ "%.2f"|format(net_pnl_usd) }}</div>
+    <div class="sub">TODAY: ${{ "%.2f"|format(today_pnl_usd) }}</div>
   </div>
-  <div class="card">
-    <div class="label">Exposure</div>
-    <div class="value neutral">{{ "%.4f"|format(exposure) }}</div>
-    <div class="sub">SOL</div>
+  <div class="metric-card">
+    <div class="label">Total Trades</div>
+    <div class="value neutral">{{ total_closed }}</div>
+    <div class="sub">closed positions</div>
   </div>
-  <div class="card">
-    <div class="label">Unrealized PnL</div>
-    <div class="value {{ 'positive' if unrealized_pnl >= 0 else 'negative' }}">{{ "%+.4f"|format(unrealized_pnl) }}</div>
-    <div class="sub">SOL</div>
-  </div>
-  <div class="card">
-    <div class="label">Realized PnL</div>
-    <div class="value {{ 'positive' if realized_pnl >= 0 else 'negative' }}">{{ "%+.4f"|format(realized_pnl) }}</div>
-    <div class="sub">SOL</div>
-  </div>
-  <div class="card">
+  <div class="metric-card">
     <div class="label">Win Rate</div>
     <div class="value {{ 'positive' if win_rate >= 50 else 'negative' }}">{{ "%.0f"|format(win_rate) }}%</div>
-    <div class="sub">{{ winners }}/{{ total_closed }} trades</div>
+    <div class="sub">{{ winners }}/{{ total_closed }}</div>
   </div>
-  <div class="card">
-    <div class="label">SOL Price</div>
-    <div class="value neutral">${{ "%.2f"|format(sol_price) }}</div>
+  <div class="metric-card">
+    <div class="label">Bankroll</div>
+    <div class="value neutral">{{ "%.4f"|format(sol_balance) }}</div>
+    <div class="sub">SOL (${{ "%.2f"|format(sol_balance * sol_price) }})</div>
+  </div>
+  <div class="metric-card">
+    <div class="label">Exposure</div>
+    <div class="value neutral">{{ "%.4f"|format(exposure) }}</div>
+    <div class="sub">SOL in {{ open_count }} position{{ 's' if open_count != 1 else '' }}</div>
+  </div>
+  <div class="metric-card">
+    <div class="label">Circuit Breaker</div>
+    <div class="value {{ 'cb-on' if circuit_breaker else 'cb-off' }}">{{ "ON" if circuit_breaker else "OFF" }}</div>
+    <div class="sub">{{ open_count }}/{{ max_open }} slots</div>
   </div>
 </div>
 
-<!-- PnL Chart -->
-{% if closed_positions %}
-<div class="section">
-  <h2>Trade PnL History</h2>
-  <div class="chart-container">
-    {% for p in closed_positions[:15] %}
-    {% set pnl = p.pnl_pct or 0 %}
-    {% set width = [([pnl if pnl > 0 else -pnl, 100] | min), 3] | max %}
-    <div class="chart-bar">
-      <div class="chart-label">{{ p.token_name[:12] }}</div>
-      <div class="chart-fill {{ 'positive' if pnl >= 0 else 'negative' }}"
-           style="width: {{ width }}%; background: {{ 'var(--green)' if pnl >= 0 else 'var(--red)' }}; opacity: 0.7;"></div>
-      <div class="chart-value">{{ "%+.1f"|format(pnl) }}% ({{ "%+.4f"|format(p.pnl_sol or 0) }} SOL)</div>
+<!-- Performance Section -->
+<div class="performance">
+  <div class="chart-panel">
+    <h3>Equity Curve (48H)</h3>
+    <div class="chart-wrap">
+      <canvas id="equityChart"></canvas>
     </div>
-    {% endfor %}
+  </div>
+  <div class="chart-panel">
+    <h3>Exit Reasons</h3>
+    <div class="chart-wrap">
+      <canvas id="exitDonut"></canvas>
+    </div>
   </div>
 </div>
-{% endif %}
 
 <!-- Open Positions with Live PnL -->
 {% if open_positions %}
@@ -329,7 +335,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         {% if p.current_value is not none %}
           {{ "%.4f"|format(p.current_value) }} SOL
         {% else %}
-          <span style="color:var(--muted)">—</span>
+          <span style="color:var(--text-muted)">—</span>
         {% endif %}
       </td>
       <td>
@@ -340,7 +346,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             {{ "%+.4f"|format(pnl) }} ({{ "%+.1f"|format(pnl_pct) }}%)
           </span>
         {% else %}
-          <span style="color:var(--muted)">—</span>
+          <span style="color:var(--text-muted)">—</span>
         {% endif %}
       </td>
       <td>{{ p.opened_at[:16] }}</td>
@@ -353,25 +359,50 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </div>
 {% endif %}
 
+<!-- Closed Positions -->
+<div class="section">
+  <h2>Closed Positions</h2>
+  {% if closed_positions %}
+  <div class="table-wrap">
+  <table>
+    <tr><th>Token</th><th>Entry</th><th>Exit</th><th>PnL SOL</th><th>PnL %</th><th>Reason</th><th>Duration</th></tr>
+    {% for p in closed_positions %}
+    <tr>
+      <td><strong>{{ p.token_name }}</strong></td>
+      <td>{{ "%.4f"|format(p.entry_sol) }}</td>
+      <td>{{ "%.4f"|format(p.exit_sol or 0) }}</td>
+      <td class="{{ 'positive' if (p.pnl_sol or 0) >= 0 else 'negative' }}">{{ "%+.4f"|format(p.pnl_sol or 0) }}</td>
+      <td class="{{ 'positive' if (p.pnl_pct or 0) >= 0 else 'negative' }}">{{ "%+.1f"|format(p.pnl_pct or 0) }}%</td>
+      <td><span class="tag {% if p.exit_reason == 'stop_loss' %}tag-sl{% elif p.exit_reason == 'take_profit' %}tag-tp{% elif p.exit_reason == 'trailing_stop' %}tag-trail{% else %}tag-closed{% endif %}">{{ (p.exit_reason or "manual") | upper }}</span></td>
+      <td>{{ p.duration or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}
+  <p style="color:var(--text-muted);font-size:0.85em">No closed positions yet.</p>
+  {% endif %}
+</div>
+
 <!-- Scanner Status -->
 <div class="section">
   <h2>Scanner Status</h2>
-  <div class="cards" style="margin-bottom:0">
-    <div class="card">
+  <div class="scanner-cards">
+    <div class="metric-card">
       <div class="label">Total Candidates</div>
       <div class="value neutral">{{ scanner.total_candidates }}</div>
     </div>
-    <div class="card">
+    <div class="metric-card">
       <div class="label">Solana Tokens</div>
       <div class="value neutral">{{ scanner.solana_candidates }}</div>
     </div>
-    <div class="card">
+    <div class="metric-card">
       <div class="label">Alerts Fired</div>
       <div class="value {{ 'positive' if scanner.total_alerts > 0 else 'neutral' }}">{{ scanner.total_alerts }}</div>
     </div>
   </div>
   {% if scanner.top_scored %}
-  <div class="scanner-grid" style="margin-top:10px">
+  <div class="scanner-grid">
     {% for t in scanner.top_scored %}
     <div class="scanner-item">
       <div class="name">{{ t.token_name }} ({{ t.ticker }})</div>
@@ -404,31 +435,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
-<!-- Closed Positions -->
-<div class="section">
-  <h2>Closed Positions</h2>
-  {% if closed_positions %}
-  <div class="table-wrap">
-  <table>
-    <tr><th>Token</th><th>Entry</th><th>Exit</th><th>PnL SOL</th><th>PnL %</th><th>Reason</th><th>Duration</th></tr>
-    {% for p in closed_positions %}
-    <tr>
-      <td><strong>{{ p.token_name }}</strong></td>
-      <td>{{ "%.4f"|format(p.entry_sol) }}</td>
-      <td>{{ "%.4f"|format(p.exit_sol or 0) }}</td>
-      <td class="{{ 'positive' if (p.pnl_sol or 0) >= 0 else 'negative' }}">{{ "%+.4f"|format(p.pnl_sol or 0) }}</td>
-      <td class="{{ 'positive' if (p.pnl_pct or 0) >= 0 else 'negative' }}">{{ "%+.1f"|format(p.pnl_pct or 0) }}%</td>
-      <td><span class="tag {% if p.exit_reason == 'stop_loss' %}tag-sl{% elif p.exit_reason == 'take_profit' %}tag-tp{% elif p.exit_reason == 'trailing_stop' %}tag-trail{% else %}tag-closed{% endif %}">{{ (p.exit_reason or "manual") | upper }}</span></td>
-      <td>{{ p.duration or "—" }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-  </div>
-  {% else %}
-  <p style="color:var(--muted);font-size:0.85em">No closed positions yet.</p>
-  {% endif %}
-</div>
-
 <!-- Recent Trades -->
 <div class="section">
   <h2>Recent Trades</h2>
@@ -443,7 +449,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <td>{{ "%.4f"|format(t.sol_amount) }}</td>
       <td>
         {% if t.tx_signature and not t.tx_signature.startswith('paper') %}
-          <a href="https://solscan.io/tx/{{ t.tx_signature }}" target="_blank" style="color:var(--blue)">{{ t.tx_signature[:16] }}...</a>
+          <a href="https://solscan.io/tx/{{ t.tx_signature }}" target="_blank" style="color:var(--cyan)">{{ t.tx_signature[:16] }}...</a>
         {% else %}{{ (t.tx_signature or "—")[:20] }}{% endif %}
       </td>
     </tr>
@@ -451,7 +457,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </table>
   </div>
   {% else %}
-  <p style="color:var(--muted);font-size:0.85em">No trades yet.</p>
+  <p style="color:var(--text-muted);font-size:0.85em">No trades yet.</p>
   {% endif %}
 </div>
 
@@ -463,17 +469,74 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </div>
 
 <script>
-function toggleTheme() {
-  const body = document.body;
-  const current = body.getAttribute('data-theme');
-  const next = current === 'dark' ? 'light' : 'dark';
-  body.setAttribute('data-theme', next);
-  localStorage.setItem('theme', next);
+// Equity Curve Chart
+const eqCtx = document.getElementById('equityChart').getContext('2d');
+const equityData = {{ equity_json | safe }};
+if (equityData.length > 0) {
+  new Chart(eqCtx, {
+    data: {
+      labels: equityData.map(d => d.hour),
+      datasets: [
+        {
+          type: 'line', label: 'Equity', data: equityData.map(d => d.cumulative),
+          borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.1)',
+          fill: true, tension: 0.3, pointRadius: 2, order: 1
+        },
+        {
+          type: 'bar', label: 'Hourly P&L', data: equityData.map(d => d.hourly),
+          backgroundColor: equityData.map(d => d.hourly >= 0 ? 'rgba(63,185,80,0.6)' : 'rgba(248,81,73,0.6)'),
+          order: 2
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { color: '#8b949e', maxRotation: 45 }, grid: { color: '#30363d' } },
+        y: { ticks: { color: '#8b949e' }, grid: { color: '#30363d' } }
+      },
+      plugins: { legend: { labels: { color: '#e6edf3' } } }
+    }
+  });
+} else {
+  eqCtx.font = '14px monospace';
+  eqCtx.fillStyle = '#8b949e';
+  eqCtx.textAlign = 'center';
+  eqCtx.fillText('No data yet', eqCtx.canvas.width / 2, 140);
 }
-// Restore theme
-const saved = localStorage.getItem('theme');
-if (saved) document.body.setAttribute('data-theme', saved);
 
+// Exit Reason Donut
+const exitCtx = document.getElementById('exitDonut').getContext('2d');
+const exitData = {{ exit_json | safe }};
+const exitColors = {
+  'trailing_stop': '#d29922', 'take_profit': '#3fb950', 'stop_loss': '#f85149',
+  'sell_pressure': '#f0883e', 'momentum_lost': '#8b949e', 'rug_detected': '#f85149',
+  'pump_window_expired': '#d29922', 'manual': '#8b949e', 'breakeven_stop': '#58a6ff',
+  'max_hold_exceeded': '#bc8cff', 'unsellable': '#f85149'
+};
+if (exitData.length > 0) {
+  new Chart(exitCtx, {
+    type: 'doughnut',
+    data: {
+      labels: exitData.map(d => d.exit_reason),
+      datasets: [{
+        data: exitData.map(d => d.count),
+        backgroundColor: exitData.map(d => exitColors[d.exit_reason] || '#8b949e')
+      }]
+    },
+    options: {
+      cutout: '60%', responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom', labels: { color: '#e6edf3', padding: 12, usePointStyle: true } } }
+    }
+  });
+} else {
+  exitCtx.font = '14px monospace';
+  exitCtx.fillStyle = '#8b949e';
+  exitCtx.textAlign = 'center';
+  exitCtx.fillText('No data yet', exitCtx.canvas.width / 2, 140);
+}
+
+// Trade execution
 async function executeTrade(side) {
   const token = document.getElementById('trade-token').value.trim();
   const amount = parseFloat(document.getElementById('trade-amount').value);
@@ -565,6 +628,51 @@ async def handle_dashboard(request: web.Request) -> web.Response:
     scanner = _get_scout_stats()
     wallet_pubkey = _get_wallet_pubkey()
 
+    # 48h realized P&L
+    realized_48h = _scalar(
+        "SELECT COALESCE(SUM(pnl_sol), 0) FROM positions WHERE status='closed' AND closed_at >= datetime('now', '-48 hours')"
+    )
+
+    # Today's realized P&L
+    today_pnl = _scalar(
+        "SELECT COALESCE(SUM(pnl_sol), 0) FROM positions WHERE status='closed' AND closed_at >= date('now')"
+    )
+
+    # Equity curve data (hourly buckets, last 48h)
+    equity_rows = _query(
+        "SELECT strftime('%Y-%m-%d %H:00', closed_at) as hour_bucket, SUM(pnl_sol) as hourly_pnl "
+        "FROM positions WHERE status='closed' AND closed_at >= datetime('now', '-48 hours') "
+        "GROUP BY hour_bucket ORDER BY hour_bucket"
+    )
+    equity_data = []
+    cumulative = 0
+    for row in equity_rows:
+        cumulative += row["hourly_pnl"]
+        equity_data.append({"hour": row["hour_bucket"][-5:], "cumulative": round(cumulative, 4), "hourly": round(row["hourly_pnl"], 4)})
+
+    # Exit reason breakdown (all-time)
+    exit_reasons = _query(
+        "SELECT exit_reason, COUNT(*) as count FROM positions "
+        "WHERE status='closed' AND exit_reason IS NOT NULL "
+        "GROUP BY exit_reason ORDER BY count DESC"
+    )
+
+    # NET P&L (48h realized + unrealized)
+    net_pnl_sol = realized_48h + unrealized_pnl
+    net_pnl_usd = net_pnl_sol * sol_price
+    today_pnl_usd = today_pnl * sol_price
+
+    # Circuit breaker
+    settings = _get_settings()
+    max_open = settings.MAX_OPEN_POSITIONS
+    circuit_breaker = open_count >= max_open
+
+    # Connection status (any activity in last 5 min)
+    last_activity = _scalar(
+        "SELECT MAX(COALESCE(closed_at, opened_at)) FROM positions WHERE opened_at >= datetime('now', '-5 minutes') OR closed_at >= datetime('now', '-5 minutes')"
+    )
+    is_connected = last_activity is not None and last_activity != 0
+
     template = Template(DASHBOARD_HTML)
     template.globals['format_tokens'] = _format_tokens
     html = template.render(
@@ -573,9 +681,14 @@ async def handle_dashboard(request: web.Request) -> web.Response:
         win_rate=win_rate, winners=winners, total_closed=total_closed,
         sol_price=sol_price, sol_balance=sol_balance,
         wallet_pubkey=wallet_pubkey, scanner=scanner,
-        dashboard_api_key=_get_settings().DASHBOARD_API_KEY or "",
+        dashboard_api_key=settings.DASHBOARD_API_KEY or "",
         open_positions=open_positions, closed_positions=closed_positions,
         recent_trades=recent_trades, now=datetime.now(timezone.utc).isoformat(),
+        net_pnl_usd=net_pnl_usd, today_pnl_usd=today_pnl_usd,
+        circuit_breaker=circuit_breaker, max_open=max_open,
+        is_connected=is_connected,
+        equity_json=json.dumps(equity_data),
+        exit_json=json.dumps([dict(r) for r in exit_reasons]),
     )
     return web.Response(text=html, content_type="text/html")
 
