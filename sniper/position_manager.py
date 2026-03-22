@@ -91,6 +91,10 @@ async def check_positions(
     position_data = await asyncio.gather(*data_tasks, return_exceptions=True)
 
     for pos, pos_data in zip(positions, position_data):
+        # Skip paper positions — user manages these manually
+        if pos.paper:
+            logger.debug("Skipping paper position", token=pos.token_name)
+            continue
         # Handle exceptions from gather
         if isinstance(pos_data, Exception):
             logger.warning("Price check raised exception", token=pos.token_name, error=str(pos_data))
