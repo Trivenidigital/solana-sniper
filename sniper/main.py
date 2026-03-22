@@ -287,6 +287,9 @@ async def main() -> None:
                                             token=sig_data.token_name,
                                             risk_score=rc_score,
                                         )
+                                        safety_passed = True
+                            except Exception as e:
+                                logger.warning("Rugcheck failed, trying GoPlus fallback", error=str(e))
 
                             # Bundle / insider detection via Rugcheck full report
                             # Known DEX/LP program addresses to exclude from holder checks
@@ -368,9 +371,6 @@ async def main() -> None:
                                             )
                             except Exception as e:
                                 logger.debug("Bundle check failed", error=str(e))
-                                        safety_passed = True
-                            except Exception as e:
-                                logger.warning("Rugcheck failed, trying GoPlus fallback", error=str(e))
 
                             # Fallback: GoPlus (works for non-pump tokens)
                             if not safety_passed:
