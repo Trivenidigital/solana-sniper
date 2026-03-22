@@ -287,6 +287,87 @@ async def main() -> None:
                                             token=sig_data.token_name,
                                             risk_score=rc_score,
                                         )
+
+                            # Bundle / insider detection via Rugcheck full report
+                            # Known DEX/LP program addresses to exclude from holder checks
+                            KNOWN_PROGRAMS = {
+                                "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",  # Raydium LP
+                                "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # Raydium V4
+                                "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",  # Raydium CPMM
+                                "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",   # Orca
+                                "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",   # Meteora
+                                "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",    # Raydium LP V2
+                            }
+                            try:
+                                async with session.get(
+                                    f"https://api.rugcheck.xyz/v1/tokens/{sig_data.contract_address}/report",
+                                    timeout=aiohttp.ClientTimeout(total=5),
+                                ) as rc_full_resp:
+                                    if rc_full_resp.status == 200:
+                                        rc_full = await rc_full_resp.json()
+                                        top_holders = rc_full.get("topHolders", [])
+                                        # Filter: only real wallets (exclude LP pools/programs, malformed entries)
+                                        real_holders = [
+                                            h for h in top_holders
+                                            if isinstance(h, dict)
+                                            and h.get("address", "") not in KNOWN_PROGRAMS
+                                        ]
+                                        if real_holders:
+                                            top1_pct = real_holders[0].get("pct", 0)
+                                            top5_pct = sum(h.get("pct", 0) for h in real_holders[:5])
+                                            insider_pct = sum(h.get("pct", 0) for h in real_holders if h.get("isInsider"))
+
+                                            # Block: single wallet > 15%
+                                            if top1_pct > 15:
+                                                logger.warning(
+                                                    "Bundle detected — top holder has too much supply",
+                                                    token=sig_data.token_name,
+                                                    top1_pct=f"{top1_pct:.1f}%",
+                                                    top5_pct=f"{top5_pct:.1f}%",
+                                                )
+                                                await send_telegram(
+                                                    f"Blocked — bundled supply\n"
+                                                    f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
+                                                    f"Top holder: {top1_pct:.1f}% | Top 5: {top5_pct:.1f}%",
+                                                    settings,
+                                                )
+                                                continue
+                                            # Block: top 5 wallets collectively > 40%
+                                            if top5_pct > 40:
+                                                logger.warning(
+                                                    "Concentrated supply — top 5 holders too large",
+                                                    token=sig_data.token_name,
+                                                    top5_pct=f"{top5_pct:.1f}%",
+                                                )
+                                                await send_telegram(
+                                                    f"Blocked — concentrated supply\n"
+                                                    f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
+                                                    f"Top 5 hold: {top5_pct:.1f}%",
+                                                    settings,
+                                                )
+                                                continue
+                                            # Block: insiders > 10%
+                                            if insider_pct > 10:
+                                                logger.warning(
+                                                    "Insider accumulation detected",
+                                                    token=sig_data.token_name,
+                                                    insider_pct=f"{insider_pct:.1f}%",
+                                                )
+                                                await send_telegram(
+                                                    f"Blocked — insider holdings\n"
+                                                    f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
+                                                    f"Insiders hold: {insider_pct:.1f}%",
+                                                    settings,
+                                                )
+                                                continue
+                                            logger.info(
+                                                "Bundle check passed",
+                                                token=sig_data.token_name,
+                                                top1_pct=f"{top1_pct:.1f}%",
+                                                top5_pct=f"{top5_pct:.1f}%",
+                                            )
+                            except Exception as e:
+                                logger.debug("Bundle check failed", error=str(e))
                                         safety_passed = True
                             except Exception as e:
                                 logger.warning("Rugcheck failed, trying GoPlus fallback", error=str(e))
