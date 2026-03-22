@@ -200,28 +200,65 @@ async def check_positions(
 
         # Phase 1: Protection (0-{protection_end} min)
         if age_minutes <= protection_end:
-            if pnl_pct <= -settings.RUG_DETECT_PCT:
-                # DexScreener can return stale prices — verify with Jupiter before declaring rug
+            # Rug detection: use Rugcheck API + Jupiter price verification
+            # NOT DexScreener price — it gives false -99% on some tokens
+            is_rug = False
+            rug_reason = ""
+
+            # Check 1: Rugcheck risk score (creator history, LP issues)
+            try:
+                async with session.get(
+                    f"https://api.rugcheck.xyz/v1/tokens/{pos.contract_address}/report/summary",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    if resp.status == 200:
+                        rc_data = await resp.json()
+                        risk_score = rc_data.get("score", 0)
+                        risks = rc_data.get("risks", [])
+                        risk_names = [r.get("name", "") if isinstance(r, dict) else str(r) for r in risks]
+
+                        # High risk: creator rugged before, or LP unlocked with high concentration
+                        if risk_score >= 10000:
+                            is_rug = True
+                            rug_reason = f"Rugcheck risk={risk_score}: {', '.join(risk_names[:3])}"
+                        elif any("rug" in r.lower() for r in risk_names):
+                            is_rug = True
+                            rug_reason = f"Creator history of rugs: {', '.join(risk_names[:3])}"
+            except Exception:
+                pass  # Rugcheck unavailable — don't false-positive
+
+            # Check 2: Verify actual price via Jupiter (not DexScreener)
+            if not is_rug and pnl_pct <= -settings.RUG_DETECT_PCT:
                 from sniper.executor import get_current_value_sol
                 jupiter_value = await get_current_value_sol(
                     session, pos.contract_address, int(pos.entry_token_amount), settings,
                 )
                 if jupiter_value is not None:
                     real_pnl = ((jupiter_value - pos.entry_sol) / pos.entry_sol) * 100
-                    if real_pnl > -settings.RUG_DETECT_PCT:
-                        logger.warning(
-                            "DexScreener showed rug but Jupiter disagrees — skipping",
+                    if real_pnl <= -settings.RUG_DETECT_PCT:
+                        is_rug = True
+                        rug_reason = f"Jupiter confirms -{abs(real_pnl):.0f}% drop"
+                        current_value = jupiter_value
+                        pnl_pct = real_pnl
+                    else:
+                        logger.info(
+                            "DexScreener false alarm — Jupiter shows token is fine",
                             token=pos.token_name,
                             dexscreener_pnl=f"{pnl_pct:.1f}%",
                             jupiter_pnl=f"{real_pnl:.1f}%",
                         )
-                        # Use Jupiter value for the rest of this check
                         current_value = jupiter_value
                         pnl_pct = real_pnl
-                        continue
+                elif pnl_pct <= -90:
+                    # Can't get Jupiter quote at all — probably truly dead
+                    is_rug = True
+                    rug_reason = "No Jupiter quote available — token likely dead"
+
+            if is_rug:
                 logger.warning(
                     "Rug detected in protection phase",
                     token=pos.token_name,
+                    reason=rug_reason,
                     pnl_pct=f"{pnl_pct:.1f}%",
                     age_minutes=f"{age_minutes:.1f}",
                 )
@@ -231,7 +268,6 @@ async def check_positions(
                     int(pos.entry_token_amount), pos.entry_sol,
                     current_value, pnl_pct, "rug_detected",
                 )
-                # Cooldown removed — trust conviction score for re-entry
                 actions.append(action)
                 continue
             else:
