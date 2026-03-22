@@ -114,16 +114,26 @@ async def check_positions(
         max_hold = settings.MAX_HOLD_MIN * liq_factor
 
         # --- Profit-taking ladder (independent of trailing) ---
+        # Rung 1: sell 25% at +50%
         if (settings.PROFIT_LADDER_ENABLED
                 and pnl_pct >= settings.PROFIT_LADDER_PCT
-                and not pos.partial_exit_done
                 and pos.partial_exit_tier < 1
                 and pos.id is not None):
             await _partial_sell(
                 db, client, keypair, session, settings,
                 pos, 0.25, pnl_pct, actions, tier=1,
             )
-            continue  # Re-evaluate next cycle to avoid double partial sell with trailing
+            continue  # Re-evaluate next cycle
+        # Rung 2: sell another 25% at +100%
+        if (settings.PROFIT_LADDER_ENABLED
+                and pnl_pct >= 100
+                and pos.partial_exit_tier < 2
+                and pos.id is not None):
+            await _partial_sell(
+                db, client, keypair, session, settings,
+                pos, 0.33, pnl_pct, actions, tier=2,  # 33% of remaining = 25% of original
+            )
+            continue
 
         # --- Trailing stop management (runs BEFORE phase checks) ---
         if pos.trailing_active and pos.id is not None:

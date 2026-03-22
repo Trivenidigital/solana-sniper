@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     SNIPER_DB_PATH: Path = Path("sniper.db")
 
     # Risk controls
-    MAX_BUY_SOL: float = 0.1
+    MAX_BUY_SOL: float = 2.0  # Aligned with KELLY_MAX_BET
     MAX_PORTFOLIO_SOL: float = 1.0
     MAX_OPEN_POSITIONS: int = 5
     STOP_LOSS_PCT: float = 25.0
@@ -58,12 +58,12 @@ class Settings(BaseSettings):
 
     # Phase thresholds
     RUG_DETECT_PCT: float = 50.0        # Phase 1: exit if down this much
-    MOMENTUM_LOSS_PCT: float = 10.0     # Phase 2: exit if down this much
-    PUMP_WINDOW_MIN_GAIN_PCT: float = 20.0  # Phase 3: must be up this much
+    MOMENTUM_LOSS_PCT: float = 15.0     # Phase 2: exit if down this much (loosened from 10%)
+    PUMP_WINDOW_MIN_GAIN_PCT: float = 15.0  # Phase 3: must be up this much (loosened from 20%)
     TRAILING_ACTIVATE_PCT: float = 30.0  # Activate trailing at this gain
 
     # Phase 4 cleanup threshold
-    PHASE4_TRAILING_MIN_PNL: float = 50.0
+    PHASE4_TRAILING_MIN_PNL: float = 25.0  # Match trailing trigger — don't force-close climbing tokens
 
     # Trailing tiers
     TRAILING_TIER1_PCT: float = 20.0    # 30-100% gain: trail at 20%
