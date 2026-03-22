@@ -148,17 +148,33 @@ async def execute_buy(
 
             # Verify transaction succeeded on-chain
             await asyncio.sleep(2)
-            try:
-                tx_resp = await client.get_transaction(
-                    Signature.from_string(tx_sig),
-                    max_supported_transaction_version=0,
-                )
-                if tx_resp.value and tx_resp.value.transaction.meta.err:
-                    raise TransactionFailedError(f"Transaction landed but swap failed: {tx_sig}")
-            except Exception as verify_err:
-                if "swap failed" in str(verify_err):
+            for verify_attempt in range(3):
+                try:
+                    tx_resp = await client.get_transaction(
+                        Signature.from_string(tx_sig),
+                        max_supported_transaction_version=0,
+                    )
+                    if tx_resp.value is None:
+                        if verify_attempt < 2:
+                            await asyncio.sleep(2)
+                            continue
+                        raise TransactionFailedError(
+                            f"Transaction not found on-chain after 3 attempts: {tx_sig}"
+                        )
+                    if tx_resp.value.transaction.meta.err:
+                        raise TransactionFailedError(
+                            f"Transaction failed on-chain: {tx_resp.value.transaction.meta.err} TX: {tx_sig}"
+                        )
+                    break  # TX confirmed and no error
+                except TransactionFailedError:
                     raise
-                logger.warning("Could not verify transaction", tx=tx_sig, error=str(verify_err))
+                except Exception as verify_err:
+                    if verify_attempt < 2:
+                        await asyncio.sleep(2)
+                        continue
+                    raise TransactionFailedError(
+                        f"Could not verify transaction: {verify_err} TX: {tx_sig}"
+                    ) from verify_err
 
             return (tx_sig, tokens_received)
 
