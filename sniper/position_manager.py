@@ -201,6 +201,24 @@ async def check_positions(
         # Phase 1: Protection (0-{protection_end} min)
         if age_minutes <= protection_end:
             if pnl_pct <= -settings.RUG_DETECT_PCT:
+                # DexScreener can return stale prices — verify with Jupiter before declaring rug
+                from sniper.executor import get_current_value_sol
+                jupiter_value = await get_current_value_sol(
+                    session, pos.contract_address, int(pos.entry_token_amount), settings,
+                )
+                if jupiter_value is not None:
+                    real_pnl = ((jupiter_value - pos.entry_sol) / pos.entry_sol) * 100
+                    if real_pnl > -settings.RUG_DETECT_PCT:
+                        logger.warning(
+                            "DexScreener showed rug but Jupiter disagrees — skipping",
+                            token=pos.token_name,
+                            dexscreener_pnl=f"{pnl_pct:.1f}%",
+                            jupiter_pnl=f"{real_pnl:.1f}%",
+                        )
+                        # Use Jupiter value for the rest of this check
+                        current_value = jupiter_value
+                        pnl_pct = real_pnl
+                        continue
                 logger.warning(
                     "Rug detected in protection phase",
                     token=pos.token_name,
