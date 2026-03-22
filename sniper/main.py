@@ -261,7 +261,14 @@ async def main() -> None:
                                         rc_score = rc_data.get("score", 0)
                                         rc_risks = rc_data.get("risks", [])
                                         rc_names = [r.get("name", "") if isinstance(r, dict) else str(r) for r in rc_risks]
-                                        if rc_score >= 10000 or any("rug" in r.lower() for r in rc_names):
+                                        # Block on high score, rug history, or dangerous risk patterns
+                                        danger_keywords = ["rug", "lp unlocked", "honeypot", "mintable", "freeze"]
+                                        has_danger = any(
+                                            any(kw in r.lower() for kw in danger_keywords)
+                                            for r in rc_names
+                                        )
+                                        # 10000+ always block, 5000+ block if dangerous keywords present
+                                        if rc_score >= 10000 or (rc_score >= 5000 and has_danger) or has_danger:
                                             logger.warning(
                                                 "Rugcheck BLOCKED pre-buy",
                                                 token=sig_data.token_name,
