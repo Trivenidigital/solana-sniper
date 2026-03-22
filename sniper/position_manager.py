@@ -327,35 +327,10 @@ async def check_positions(
                 actions.append(action)
                 continue
 
-        # --- Sell pressure check (using data from batch fetch) ---
-        # Only triggers if: held >5 min, currently in loss, and sell ratio >80%
-        if sell_ratio is not None:
-            logger.debug(
-                "Sell pressure",
-                token=pos.token_name,
-                sell_ratio=f"{sell_ratio:.2f}",
-            )
-            if (
-                sell_ratio > settings.SELL_PRESSURE_THRESHOLD
-                and age_minutes > 5
-                and pnl_pct < 0
-            ):
-                logger.warning(
-                    "High sell pressure + in loss — force closing",
-                    token=pos.token_name,
-                    sell_ratio=f"{sell_ratio:.2f}",
-                    pnl_pct=f"{pnl_pct:.1f}%",
-                    age_minutes=f"{age_minutes:.1f}",
-                    threshold=settings.SELL_PRESSURE_THRESHOLD,
-                )
-                action = await _close_position(
-                    db, client, keypair, session, settings,
-                    pos.id, pos.contract_address, pos.token_name,
-                    int(pos.entry_token_amount), pos.entry_sol,
-                    current_value, pnl_pct, "sell_pressure",
-                )
-                actions.append(action)
-                continue
+        # Sell pressure check removed — DexScreener's m5 sell ratio reflects overall
+        # market activity, not activity since our entry. This caused false exits
+        # (e.g., entering after a 70% correction still showed 70% sell ratio).
+        # Price-based exits (stop loss, momentum loss, trailing stop) handle this better.
 
         logger.debug(
             "Position check",
