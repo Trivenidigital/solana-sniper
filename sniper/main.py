@@ -316,41 +316,31 @@ async def main() -> None:
                                             and h.get("address", "") not in KNOWN_PROGRAMS
                                         ]
                                         if real_holders:
+                                            creator = rc_full.get("creator", "")
                                             top1_pct = real_holders[0].get("pct", 0)
+                                            top1_addr = real_holders[0].get("owner", "") or real_holders[0].get("address", "")
                                             top5_pct = sum(h.get("pct", 0) for h in real_holders[:5])
-                                            insider_pct = sum(h.get("pct", 0) for h in real_holders if h.get("isInsider"))
+                                            insider_pct = sum(h.get("pct", 0) for h in real_holders if h.get("isInsider") or h.get("owner") == creator)
 
-                                            # Block: single wallet > 15%
-                                            if top1_pct > 15:
+                                            # Block: creator/insider holds > 15%
+                                            is_creator_top = top1_addr == creator
+                                            top1_insider = real_holders[0].get("isInsider", False)
+                                            if top1_pct > 15 and (is_creator_top or top1_insider):
                                                 logger.warning(
-                                                    "Bundle detected — top holder has too much supply",
+                                                    "Bundle detected — creator/insider holds too much",
                                                     token=sig_data.token_name,
                                                     top1_pct=f"{top1_pct:.1f}%",
-                                                    top5_pct=f"{top5_pct:.1f}%",
+                                                    is_creator=is_creator_top,
                                                 )
                                                 await send_telegram(
-                                                    f"Blocked — bundled supply\n"
+                                                    f"Blocked — creator/insider bundled\n"
                                                     f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
-                                                    f"Top holder: {top1_pct:.1f}% | Top 5: {top5_pct:.1f}%",
+                                                    f"Top holder: {top1_pct:.1f}% {'(CREATOR)' if is_creator_top else '(INSIDER)'}",
                                                     settings,
                                                 )
                                                 continue
-                                            # Block: top 5 wallets collectively > 40%
-                                            if top5_pct > 40:
-                                                logger.warning(
-                                                    "Concentrated supply — top 5 holders too large",
-                                                    token=sig_data.token_name,
-                                                    top5_pct=f"{top5_pct:.1f}%",
-                                                )
-                                                await send_telegram(
-                                                    f"Blocked — concentrated supply\n"
-                                                    f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
-                                                    f"Top 5 hold: {top5_pct:.1f}%",
-                                                    settings,
-                                                )
-                                                continue
-                                            # Block: insiders > 10%
-                                            if insider_pct > 10:
+                                            # Block: insiders/creator collectively > 25%
+                                            if insider_pct > 25:
                                                 logger.warning(
                                                     "Insider accumulation detected",
                                                     token=sig_data.token_name,
