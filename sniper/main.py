@@ -62,6 +62,13 @@ async def main() -> None:
     if args.live:
         settings.PAPER_MODE = False
 
+    # Validate smart money config
+    if settings.COPY_TRADE_ENABLED and not settings.SMART_MONEY_WALLETS.strip():
+        raise ValueError(
+            "COPY_TRADE_ENABLED=true but SMART_MONEY_WALLETS is empty. "
+            "Configure tracked wallets in .env or disable copy trading."
+        )
+
     # Load wallets
     keypair = load_keypair(settings.KEYPAIR_PATH)
     pubkey = keypair.pubkey()
@@ -147,7 +154,7 @@ async def main() -> None:
             )
 
         copy_trade_task = asyncio.create_task(
-            monitor_wallets(settings, _on_smart_money_signal)
+            monitor_wallets(settings, _on_smart_money_signal, send_telegram_fn=send_telegram)
         )
         logger.info("Copy trader started (score boost mode)")
 
@@ -158,7 +165,7 @@ async def main() -> None:
                     now = datetime.now(timezone.utc)
 
                     # --- Signal check phase ---
-                    prune_stale_signals()
+                    prune_stale_signals(max_age_minutes=max(60, settings.BACKFILL_MAX_MINUTES))
                     elapsed = (now - last_signal_check).total_seconds()
                     if elapsed >= settings.POLL_INTERVAL_SECONDS:
                         signals = await read_new_signals(
@@ -183,12 +190,20 @@ async def main() -> None:
                             # Conviction-weighted sizing (boost if smart money detected)
                             conviction = sig_data.conviction_score or 30
                             if sig_data.contract_address in smart_money_signals:
-                                conviction += settings.COPY_TRADE_SCORE_BOOST
+                                sm = smart_money_signals[sig_data.contract_address]
+                                wallet_count = sm["count"]
+                                boost = min(
+                                    wallet_count * settings.COPY_TRADE_SCORE_BOOST,
+                                    settings.SMART_MONEY_BOOST_CAP,
+                                )
+                                conviction += boost
                                 logger.info(
                                     "Smart money boost applied",
                                     token=sig_data.token_name,
                                     original=sig_data.conviction_score,
                                     boosted=conviction,
+                                    smart_wallets=wallet_count,
+                                    boost=boost,
                                 )
                             # Conviction-tiered Kelly multiplier
                             if conviction >= 60:
