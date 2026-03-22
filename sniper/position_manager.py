@@ -328,17 +328,24 @@ async def check_positions(
                 continue
 
         # --- Sell pressure check (using data from batch fetch) ---
+        # Only triggers if: held >5 min, currently in loss, and sell ratio >80%
         if sell_ratio is not None:
             logger.debug(
                 "Sell pressure",
                 token=pos.token_name,
                 sell_ratio=f"{sell_ratio:.2f}",
             )
-            if sell_ratio > settings.SELL_PRESSURE_THRESHOLD:
+            if (
+                sell_ratio > settings.SELL_PRESSURE_THRESHOLD
+                and age_minutes > 5
+                and pnl_pct < 0
+            ):
                 logger.warning(
-                    "High sell pressure detected — force closing",
+                    "High sell pressure + in loss — force closing",
                     token=pos.token_name,
                     sell_ratio=f"{sell_ratio:.2f}",
+                    pnl_pct=f"{pnl_pct:.1f}%",
+                    age_minutes=f"{age_minutes:.1f}",
                     threshold=settings.SELL_PRESSURE_THRESHOLD,
                 )
                 action = await _close_position(

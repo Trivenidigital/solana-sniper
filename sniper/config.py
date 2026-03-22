@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     PROFIT_LADDER_PCT: float = 50.0
 
     # Sell pressure monitoring
-    SELL_PRESSURE_THRESHOLD: float = 0.70
+    SELL_PRESSURE_THRESHOLD: float = 0.80  # 80% sells — only exit if also in loss and >5min held
 
     # Liquidity-adjusted position sizing
     LIQUIDITY_SIZING_ENABLED: bool = True
