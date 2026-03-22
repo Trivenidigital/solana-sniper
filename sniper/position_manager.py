@@ -301,23 +301,33 @@ async def check_positions(
                 )
 
         # Phase 2: Momentum ({protection_end}-{momentum_end} min)
+        # Uses drop-from-peak instead of drop-from-entry — memecoins dip 15-20% regularly
         elif age_minutes <= momentum_end:
-            if pnl_pct <= -settings.MOMENTUM_LOSS_PCT:
-                logger.info(
-                    "Momentum lost in phase 2",
-                    token=pos.token_name,
-                    pnl_pct=f"{pnl_pct:.1f}%",
-                    age_minutes=f"{age_minutes:.1f}",
-                )
-                action = await _close_position(
-                    db, client, keypair, session, settings,
-                    pos.id, pos.contract_address, pos.token_name,
-                    int(pos.entry_token_amount), pos.entry_sol,
-                    current_value, pnl_pct, "momentum_lost",
-                )
-                # Cooldown removed — trust conviction score for re-entry
-                actions.append(action)
-                continue
+            # Track peak
+            if current_value > (pos.peak_value_sol or 0) and pos.id is not None:
+                pos.peak_value_sol = current_value
+                await db.update_peak_value(pos.id, current_value)
+
+            # Check drop from peak (not from entry)
+            if pos.peak_value_sol and pos.peak_value_sol > 0:
+                drop_from_peak = ((pos.peak_value_sol - current_value) / pos.peak_value_sol) * 100
+                if drop_from_peak >= settings.MOMENTUM_LOSS_PCT:
+                    logger.info(
+                        "Momentum lost — dropped from peak in phase 2",
+                        token=pos.token_name,
+                        pnl_pct=f"{pnl_pct:.1f}%",
+                        drop_from_peak=f"{drop_from_peak:.1f}%",
+                        peak=f"{pos.peak_value_sol:.4f}",
+                        age_minutes=f"{age_minutes:.1f}",
+                    )
+                    action = await _close_position(
+                        db, client, keypair, session, settings,
+                        pos.id, pos.contract_address, pos.token_name,
+                        int(pos.entry_token_amount), pos.entry_sol,
+                        current_value, pnl_pct, "momentum_lost",
+                    )
+                    actions.append(action)
+                    continue
             elif pnl_pct >= settings.TRAILING_ACTIVATE_PCT and not pos.trailing_active and pos.id is not None:
                 pos.trailing_active = True
                 await db.set_trailing_active(pos.id)
