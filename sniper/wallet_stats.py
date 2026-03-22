@@ -37,19 +37,6 @@ async def _get_sol_price(session: aiohttp.ClientSession) -> float:
     return 0.0
 
 
-async def _get_token_price_sol(session: aiohttp.ClientSession, mint: str) -> float | None:
-    """Get current token price in SOL via Jupiter."""
-    try:
-        # Quote 1 token unit (we'll just check if it's tradeable and get relative price)
-        url = f"{JUPITER_QUOTE_URL}?inputMint={mint}&outputMint={SOL_MINT}&amount=1000000&slippageBps=500"
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                return int(data.get("outAmount", 0)) / 1e9
-    except Exception:
-        pass
-    return None
-
 
 def _extract_trade(tx: dict, wallet: str) -> dict | None:
     """Extract buy/sell info from a parsed Helius transaction.
@@ -117,15 +104,13 @@ async def _fetch_all_swaps(
     page = 0
 
     while len(all_txns) < max_txns:
-        url = (
-            f"https://api.helius.xyz/v0/addresses/{wallet}/transactions"
-            f"?api-key={api_key}&limit=100&type=SWAP"
-        )
+        url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions"
+        params: dict = {"api-key": api_key, "limit": 100, "type": "SWAP"}
         if before_sig:
-            url += f"&before={before_sig}"
+            params["before"] = before_sig
 
         try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 if resp.status == 429:
                     print(f"  Rate limited, waiting 3s...")
                     await asyncio.sleep(3)

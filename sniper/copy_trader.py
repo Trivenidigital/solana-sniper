@@ -195,7 +195,16 @@ async def _backfill_after_reconnect(
                     if token_mint:
                         async with signals_lock:
                             already_seen = token_mint in smart_money_signals
-                        await _record_signal(token_mint, wallet)
+                            # Record inline to avoid TOCTOU race
+                            now = datetime.now(timezone.utc)
+                            if token_mint in smart_money_signals:
+                                smart_money_signals[token_mint]["wallets"].add(wallet)
+                                smart_money_signals[token_mint]["count"] = len(smart_money_signals[token_mint]["wallets"])
+                                smart_money_signals[token_mint]["detected_at"] = now
+                            else:
+                                smart_money_signals[token_mint] = {
+                                    "wallets": {wallet}, "count": 1, "detected_at": now,
+                                }
                         if not already_seen:
                             await _write_injection(conn, token_mint, wallet, sig, source="backfill")
                             logger.info("Backfilled signal — NEW", wallet=wallet[:8], token=token_mint[:20])
@@ -294,10 +303,18 @@ async def monitor_wallets(settings: Settings, buy_callback, send_telegram_fn=Non
                                     )
                                     await asyncio.sleep(0.5)  # Rate limit Helius REST calls
                                     if token_mint:
-                                        # Dedup: only inject new tokens, skip re-buys of same token
                                         async with signals_lock:
                                             already_seen = token_mint in smart_money_signals
-                                        await _record_signal(token_mint, wallet or "unknown")
+                                            # Record inline to avoid TOCTOU race
+                                            now = datetime.now(timezone.utc)
+                                            if token_mint in smart_money_signals:
+                                                smart_money_signals[token_mint]["wallets"].add(wallet or "unknown")
+                                                smart_money_signals[token_mint]["count"] = len(smart_money_signals[token_mint]["wallets"])
+                                                smart_money_signals[token_mint]["detected_at"] = now
+                                            else:
+                                                smart_money_signals[token_mint] = {
+                                                    "wallets": {wallet or "unknown"}, "count": 1, "detected_at": now,
+                                                }
                                         last_injection_time = datetime.now(timezone.utc)
                                         if not already_seen:
                                             await _write_injection(scout_db_conn, token_mint, wallet or "unknown", signature)
