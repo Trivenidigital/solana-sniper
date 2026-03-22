@@ -190,7 +190,13 @@ async def main() -> None:
                                     original=sig_data.conviction_score,
                                     boosted=conviction,
                                 )
-                            conviction_factor = 0.5 + 0.5 * (conviction / 100)
+                            # Conviction-tiered Kelly multiplier
+                            if conviction >= 60:
+                                conviction_factor = 2.0   # 25% of balance
+                            elif conviction >= 40:
+                                conviction_factor = 1.5   # 18.75% of balance
+                            else:
+                                conviction_factor = 0.7   # 8.75% of balance
                             kelly_bet_adj = kelly_bet * conviction_factor
 
                             if settings.LIQUIDITY_SIZING_ENABLED:
