@@ -81,6 +81,7 @@ async def filter_actionable(
     - Token is on cooldown after a stop-loss
     """
     actionable: list[Signal] = []
+    skipped_signals: list[str] = []
     now = datetime.now(timezone.utc)
 
     for signal in signals:
@@ -115,9 +116,30 @@ async def filter_actionable(
             continue
         if await db.is_on_cooldown(signal.contract_address):
             logger.debug("Token on cooldown", token=signal.token_name)
+            # Get cooldown details for skip notification
+            cursor = await db._conn.execute(
+                "SELECT cooldown_until FROM cooldowns WHERE contract_address=?",
+                (signal.contract_address,),
+            )
+            cd_row = await cursor.fetchone()
+            # Get last exit reason
+            cursor2 = await db._conn.execute(
+                "SELECT exit_reason, pnl_pct FROM positions WHERE contract_address=? AND status='closed' ORDER BY closed_at DESC LIMIT 1",
+                (signal.contract_address,),
+            )
+            exit_row = await cursor2.fetchone()
+            skip_reason = exit_row[0] if exit_row else "unknown"
+            skip_pnl = f"{exit_row[1]:+.1f}%" if exit_row and exit_row[1] else ""
+            cd_until = cd_row[0][:16] if cd_row else "?"
+            skipped_signals.append(
+                f"{signal.token_name} ({signal.ticker}) — cooldown until {cd_until} UTC ({skip_reason} {skip_pnl})"
+            )
             continue
         existing = await db.get_open_position_by_address(signal.contract_address)
         if existing is not None:
+            skipped_signals.append(
+                f"{signal.token_name} ({signal.ticker}) — already in open position"
+            )
             continue
         actionable.append(signal)
-    return actionable
+    return actionable, skipped_signals
