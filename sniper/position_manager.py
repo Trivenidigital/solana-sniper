@@ -219,13 +219,36 @@ async def check_positions(
                         risks = rc_data.get("risks", [])
                         risk_names = [r.get("name", "") if isinstance(r, dict) else str(r) for r in risks]
 
-                        # High risk: creator rugged before, or LP unlocked with high concentration
-                        if risk_score >= 10000:
-                            is_rug = True
-                            rug_reason = f"Rugcheck risk={risk_score}: {', '.join(risk_names[:3])}"
-                        elif any("rug" in r.lower() for r in risk_names):
-                            is_rug = True
-                            rug_reason = f"Creator history of rugs: {', '.join(risk_names[:3])}"
+                        # High risk: only trust Rugcheck rug signal if Jupiter
+                        # also confirms a significant price drop. Rugcheck returns
+                        # false "LP Unlocked" for pumpswap tokens.
+                        if risk_score >= 10000 or any("rug" in r.lower() for r in risk_names):
+                            # Verify with Jupiter before acting — Rugcheck can be wrong
+                            from sniper.executor import get_current_value_sol
+                            jupiter_value = await get_current_value_sol(
+                                session, pos.contract_address,
+                                int(pos.entry_token_amount), settings,
+                            )
+                            if jupiter_value is not None:
+                                real_pnl = ((jupiter_value - pos.entry_sol) / pos.entry_sol) * 100
+                                if real_pnl <= -30:
+                                    # Jupiter confirms big drop + Rugcheck flags danger
+                                    is_rug = True
+                                    rug_reason = (f"Rugcheck risk={risk_score}: "
+                                                  f"{', '.join(risk_names[:3])} "
+                                                  f"(Jupiter confirms {real_pnl:.0f}%)")
+                                else:
+                                    logger.info(
+                                        "Rugcheck flagged but Jupiter shows token healthy",
+                                        token=pos.token_name,
+                                        rugcheck_score=risk_score,
+                                        jupiter_pnl=f"{real_pnl:.1f}%",
+                                        risks=risk_names[:3],
+                                    )
+                            else:
+                                # Can't verify with Jupiter — trust Rugcheck
+                                is_rug = True
+                                rug_reason = f"Rugcheck risk={risk_score}: {', '.join(risk_names[:3])}"
             except Exception:
                 pass  # Rugcheck unavailable — don't false-positive
 
