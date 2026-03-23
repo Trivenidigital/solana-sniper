@@ -76,3 +76,27 @@ async def check_godmode_bundles(
         logger.debug("GODMODE check failed", error=str(e), token=token_mint)
         result["error"] = str(e)
         return result
+
+
+async def trigger_godmode_scan(token_mint: str, settings: Settings) -> None:
+    """Trigger a fresh GODMODE scan for a token asynchronously.
+
+    Fire-and-forget — call at signal receipt time so by the time the bot
+    reaches the buy check, GODMODE has had a few seconds to scan.
+    """
+    if not settings.GODMODE_ENABLED:
+        return
+    try:
+        url = f"{settings.GODMODE_URL}/api/db/scan-token"
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                json={"mint": token_mint},
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status == 200:
+                    logger.debug("GODMODE scan triggered", token=token_mint)
+                else:
+                    logger.debug("GODMODE scan trigger failed", status=resp.status, token=token_mint)
+    except Exception:
+        pass  # fire and forget

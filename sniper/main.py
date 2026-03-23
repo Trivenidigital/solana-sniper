@@ -183,6 +183,15 @@ async def main() -> None:
                             logger.info("Signals skipped", count=len(skipped))
                             await send_telegram(skip_msg, settings)
 
+                        # Trigger GODMODE scans for all actionable tokens proactively
+                        # so data is ready by the time we reach the buy check
+                        if settings.GODMODE_ENABLED and actionable:
+                            from sniper.godmode import trigger_godmode_scan
+                            await asyncio.gather(
+                                *[trigger_godmode_scan(s.contract_address, settings) for s in actionable],
+                                return_exceptions=True,
+                            )
+
                         # Fetch SOL balance once before iterating signals
                         cycle_balance = await get_sol_balance(rpc_client, pubkey) if not settings.PAPER_MODE else 1.0
 
