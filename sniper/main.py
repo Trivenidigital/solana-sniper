@@ -18,6 +18,7 @@ from sniper.kelly import calculate_kelly_bet
 from sniper.models import Position
 from sniper.multi_wallet import copy_buy, load_wallets, get_all_balances
 from sniper.position_manager import check_positions, portfolio_summary
+from sniper.godmode import check_godmode_bundles
 from sniper.safety import check_token_safety  # GoPlus — fallback when Rugcheck is down
 from sniper.signal_reader import filter_actionable, read_new_signals
 from sniper.telegram_notify import send_telegram
@@ -391,6 +392,43 @@ async def main() -> None:
                                             )
                             except Exception as e:
                                 logger.warning("Rugcheck failed, trying GoPlus fallback", error=str(e))
+
+                            # GODMODE bundle detection — check DB for prior scan results
+                            if settings.GODMODE_ENABLED:
+                                try:
+                                    gm = await check_godmode_bundles(
+                                        sig_data.contract_address, settings,
+                                    )
+                                    if gm["error"]:
+                                        logger.debug(
+                                            "GODMODE check error (fail open)",
+                                            token=sig_data.token_name,
+                                            error=gm["error"],
+                                        )
+                                    elif not gm["clean"]:
+                                        logger.warning(
+                                            "GODMODE bundle detected — skipping buy",
+                                            token=sig_data.token_name,
+                                            bundle_pct=f"{gm['bundle_pct']:.1f}%",
+                                            bundled_wallets=gm["bundled_wallets"],
+                                        )
+                                        await send_telegram(
+                                            f"Blocked by GODMODE\n"
+                                            f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
+                                            f"Bundle: {gm['bundle_pct']:.1f}% of holders bundled\n"
+                                            f"Bundled wallets: {gm['bundled_wallets']}",
+                                            settings,
+                                        )
+                                        continue
+                                    elif gm["bundled_wallets"] > 0:
+                                        logger.info(
+                                            "GODMODE: some bundles but below threshold",
+                                            token=sig_data.token_name,
+                                            bundle_pct=f"{gm['bundle_pct']:.1f}%",
+                                            bundled_wallets=gm["bundled_wallets"],
+                                        )
+                                except Exception as e:
+                                    logger.debug("GODMODE check exception (fail open)", error=str(e))
 
                             # Helius-based bundle detection — only for fresh tokens (<30 min old)
                             # Older tokens: bundler already sold, organic holders took over
