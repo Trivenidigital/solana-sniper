@@ -267,20 +267,27 @@ async def main() -> None:
                                     if dex_resp.status == 200:
                                         dex_data = await dex_resp.json()
                                         if isinstance(dex_data, list) and dex_data:
-                                            live_liq = float(dex_data[0].get("liquidity", {}).get("usd", 0) or 0)
-                                            if live_liq < settings.MIN_LIQUIDITY_USD:
-                                                logger.warning(
-                                                    "Live liquidity below minimum — skipping buy",
+                                            liq_obj = dex_data[0].get("liquidity")
+                                            if liq_obj and isinstance(liq_obj, dict):
+                                                live_liq = float(liq_obj.get("usd", 0) or 0)
+                                                if live_liq > 0 and live_liq < settings.MIN_LIQUIDITY_USD:
+                                                    logger.warning(
+                                                        "Live liquidity below minimum — skipping buy",
+                                                        token=sig_data.token_name,
+                                                        live_liquidity_usd=f"${live_liq:,.0f}",
+                                                        min_required=f"${settings.MIN_LIQUIDITY_USD:,.0f}",
+                                                    )
+                                                    continue
+                                                logger.debug(
+                                                    "Live liquidity check passed",
                                                     token=sig_data.token_name,
-                                                    live_liquidity_usd=f"${live_liq:,.0f}",
-                                                    min_required=f"${settings.MIN_LIQUIDITY_USD:,.0f}",
+                                                    liquidity_usd=f"${live_liq:,.0f}",
                                                 )
-                                                continue
-                                            logger.debug(
-                                                "Live liquidity check passed",
-                                                token=sig_data.token_name,
-                                                liquidity_usd=f"${live_liq:,.0f}",
-                                            )
+                                            else:
+                                                logger.debug(
+                                                    "DexScreener liquidity data unavailable — proceeding",
+                                                    token=sig_data.token_name,
+                                                )
                             except Exception as e:
                                 logger.debug("DexScreener liquidity check failed, proceeding", error=str(e))
 
