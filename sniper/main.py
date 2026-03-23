@@ -257,6 +257,33 @@ async def main() -> None:
                                         original=f"{buy_amount:.4f}", capped=f"{max_available:.4f}")
                                     buy_amount = max_available
 
+                            # Pre-buy safety: real-time liquidity check via DexScreener
+                            # Reject if current liquidity is below MIN_LIQUIDITY_USD
+                            try:
+                                async with session.get(
+                                    f"https://api.dexscreener.com/tokens/v1/solana/{sig_data.contract_address}",
+                                    timeout=aiohttp.ClientTimeout(total=5),
+                                ) as dex_resp:
+                                    if dex_resp.status == 200:
+                                        dex_data = await dex_resp.json()
+                                        if isinstance(dex_data, list) and dex_data:
+                                            live_liq = float(dex_data[0].get("liquidity", {}).get("usd", 0) or 0)
+                                            if live_liq < settings.MIN_LIQUIDITY_USD:
+                                                logger.warning(
+                                                    "Live liquidity below minimum — skipping buy",
+                                                    token=sig_data.token_name,
+                                                    live_liquidity_usd=f"${live_liq:,.0f}",
+                                                    min_required=f"${settings.MIN_LIQUIDITY_USD:,.0f}",
+                                                )
+                                                continue
+                                            logger.debug(
+                                                "Live liquidity check passed",
+                                                token=sig_data.token_name,
+                                                liquidity_usd=f"${live_liq:,.0f}",
+                                            )
+                            except Exception as e:
+                                logger.debug("DexScreener liquidity check failed, proceeding", error=str(e))
+
                             # Pre-buy safety: Rugcheck full report (single call for both
                             # summary + bundle check) → GoPlus (fallback) → fail-closed
                             # Known DEX/LP program addresses to exclude from holder checks
