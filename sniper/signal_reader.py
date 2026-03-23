@@ -49,7 +49,8 @@ async def read_new_signals(
             cursor = await conn.execute(
                 """
                 SELECT a.contract_address, a.chain,
-                       '' AS token_name, '' AS ticker,
+                       COALESCE(c.token_name, a.contract_address) AS token_name,
+                       COALESCE(c.ticker, '') AS ticker,
                        a.conviction_score,
                        COALESCE(a.market_cap_usd, 0) AS market_cap_usd,
                        0 AS liquidity_usd,
@@ -59,6 +60,7 @@ async def read_new_signals(
                        0 AS top3_wallet_concentration,
                        0 AS holder_count
                 FROM alerts a
+                LEFT JOIN candidates c ON a.contract_address = c.contract_address
                 WHERE a.chain = 'solana'
                   AND a.conviction_score >= ?
                   AND a.alerted_at > ?
