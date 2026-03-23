@@ -117,16 +117,9 @@ async def filter_actionable(
                 max_allowed=settings.MAX_TOP3_CONCENTRATION,
             )
             continue
-        if signal.holder_count < settings.MIN_HOLDER_COUNT:
-            logger.debug(
-                "Holder count too low",
-                token=signal.token_name,
-                holder_count=signal.holder_count,
-                min_required=settings.MIN_HOLDER_COUNT,
-            )
-            continue
-        if signal.liquidity_usd < settings.MIN_LIQUIDITY_USD:
-            continue
+        # NOTE: holder_count and liquidity_usd are not available from alerts table
+        # (they default to 0). Real-time liquidity is checked in main.py via
+        # DexScreener before buying. Don't filter on stale/missing data here.
         if signal.token_age_days > settings.MAX_TOKEN_AGE_DAYS:
             logger.debug("Token too old", token=signal.token_name, age_days=signal.token_age_days)
             continue
