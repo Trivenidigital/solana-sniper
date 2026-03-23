@@ -36,16 +36,23 @@ async def read_new_signals(
     try:
         async with aiosqlite.connect(db_uri, uri=True) as conn:
             conn.row_factory = aiosqlite.Row
+            # TODO: The scout should snapshot quality fields (market_cap_usd,
+            # liquidity_usd, volume_24h_usd, token_age_days,
+            # top3_wallet_concentration, holder_count) into the alerts table
+            # at alert time. For now, read only from alerts and use defaults
+            # for fields that may not yet be present.
             cursor = await conn.execute(
                 """
-                SELECT c.contract_address, c.chain, c.token_name, c.ticker,
-                       a.conviction_score, c.market_cap_usd, c.liquidity_usd,
-                       c.volume_24h_usd, a.alerted_at,
-                       COALESCE(c.token_age_days, 0) AS token_age_days,
-                       COALESCE(c.top3_wallet_concentration, 0) AS top3_wallet_concentration,
-                       COALESCE(c.holder_count, 0) AS holder_count
+                SELECT a.contract_address, a.chain, a.token_name, a.ticker,
+                       a.conviction_score,
+                       COALESCE(a.market_cap_usd, 0) AS market_cap_usd,
+                       COALESCE(a.liquidity_usd, 0) AS liquidity_usd,
+                       COALESCE(a.volume_24h_usd, 0) AS volume_24h_usd,
+                       a.alerted_at,
+                       COALESCE(a.token_age_days, 0) AS token_age_days,
+                       COALESCE(a.top3_wallet_concentration, 0) AS top3_wallet_concentration,
+                       COALESCE(a.holder_count, 0) AS holder_count
                 FROM alerts a
-                JOIN candidates c ON a.contract_address = c.contract_address
                 WHERE a.chain = 'solana'
                   AND a.conviction_score >= ?
                   AND a.alerted_at > ?
@@ -92,7 +99,8 @@ async def filter_actionable(
         # Signal freshness gate
         signal_age_seconds = (now - signal.alerted_at).total_seconds()
         if signal_age_seconds > settings.MAX_SIGNAL_AGE_SECONDS:
-            logger.debug("Signal too old", token=signal.token_name, age_seconds=signal_age_seconds)
+            logger.info("Signal dropped — too old", token=signal.token_name, age_seconds=int(signal_age_seconds),
+                        max_age=settings.MAX_SIGNAL_AGE_SECONDS)
             continue
         # Hard quality gates
         if signal.top3_wallet_concentration > settings.MAX_TOP3_CONCENTRATION:

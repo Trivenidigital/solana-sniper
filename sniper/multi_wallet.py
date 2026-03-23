@@ -53,11 +53,11 @@ async def copy_buy(
             if bal < sol_amount + 0.01:
                 return {"wallet": pubkey, "tx": None, "tokens": 0, "success": False, "error": f"Insufficient SOL: {bal:.4f}"}
 
-            tx_sig, tokens = await execute_buy(
+            tx_sig, tokens, decimals = await execute_buy(
                 client, kp, session, contract_address, sol_amount, settings,
             )
             logger.info("Copy buy success", wallet=pubkey, tx=tx_sig, tokens=tokens)
-            return {"wallet": pubkey, "tx": tx_sig, "tokens": tokens, "success": True, "error": None}
+            return {"wallet": pubkey, "tx": tx_sig, "tokens": tokens, "decimals": decimals, "success": True, "error": None}
         except Exception as e:
             logger.error("Copy buy failed", wallet=pubkey, error=str(e))
             return {"wallet": pubkey, "tx": None, "tokens": 0, "success": False, "error": str(e)}

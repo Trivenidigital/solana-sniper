@@ -27,26 +27,34 @@ logger = structlog.get_logger()
 _rpc_clients: list[AsyncClient] = []
 
 
-async def _get_healthy_client(settings: Settings) -> AsyncClient:
+async def _get_healthy_client(client: AsyncClient, settings: Settings) -> AsyncClient:
     """Get a healthy RPC client, falling back to alternatives.
 
-    NOTE: This is infrastructure for future use. Not wired into execution path yet
-    to avoid changing the hot path. Call manually if primary RPC is unresponsive.
+    Tries the provided client first, then falls back to configured RPC URLs.
     """
+    # Try primary client first
+    try:
+        await asyncio.wait_for(client.get_health(), timeout=3)
+        return client
+    except Exception:
+        logger.warning("Primary RPC unhealthy, trying fallbacks")
+
     if not _rpc_clients:
-        urls = [settings.SOLANA_RPC_URL]
         if settings.SOLANA_RPC_URLS:
-            urls.extend(u.strip() for u in settings.SOLANA_RPC_URLS.split(",") if u.strip())
-        for url in urls:
-            _rpc_clients.append(AsyncClient(url))
+            urls = [u.strip() for u in settings.SOLANA_RPC_URLS.split(",") if u.strip()]
+            for url in urls:
+                _rpc_clients.append(AsyncClient(url))
 
     for rpc_client in _rpc_clients:
         try:
             await asyncio.wait_for(rpc_client.get_health(), timeout=3)
+            logger.info("Switched to fallback RPC", url=str(rpc_client._provider.endpoint_uri))
             return rpc_client
         except Exception:
             continue
-    return _rpc_clients[0]  # Fallback to primary
+
+    logger.warning("All RPC fallbacks failed, using primary")
+    return client  # Fallback to primary even if unhealthy
 
 
 async def _get_actual_token_balance(client: AsyncClient, owner_pubkey, mint_address: str) -> int:
@@ -89,8 +97,43 @@ async def _get_token_decimals(contract_address: str, session: aiohttp.ClientSess
                 _decimals_cache.popitem(last=False)  # Remove oldest
             return decimals
     except Exception:
-        # Fallback: pump.fun tokens are 6, most others are 9
-        return 6 if contract_address.endswith("pump") else 9
+        logger.warning(
+            "Could not fetch token decimals from RPC, defaulting to 9",
+            token=contract_address,
+        )
+        return 9
+
+
+async def _verify_transaction(client: AsyncClient, tx_sig: str, contract_address: str) -> None:
+    """Background verification of a transaction on-chain.
+
+    Logs warnings if the transaction cannot be verified or failed.
+    """
+    await asyncio.sleep(5)
+    for verify_attempt in range(5):
+        try:
+            tx_resp = await client.get_transaction(
+                Signature.from_string(tx_sig),
+                max_supported_transaction_version=0,
+            )
+            if tx_resp.value is None:
+                if verify_attempt < 4:
+                    await asyncio.sleep(3)
+                    continue
+                logger.warning("Buy TX not found on-chain after 5 attempts", tx=tx_sig, token=contract_address)
+                return
+            if tx_resp.value.transaction.meta.err:
+                logger.error("Buy TX failed on-chain", tx=tx_sig, token=contract_address,
+                             error=str(tx_resp.value.transaction.meta.err))
+                return
+            logger.info("Buy TX verified on-chain", tx=tx_sig, token=contract_address)
+            return
+        except Exception as verify_err:
+            if verify_attempt < 4:
+                await asyncio.sleep(3)
+                continue
+            logger.warning("Could not verify buy TX", tx=tx_sig, token=contract_address, error=str(verify_err))
+            return
 
 
 _BUY_SLIPPAGE_TIERS = [500, 1000, 1500]  # 5%, 10%, 15%
@@ -103,15 +146,17 @@ async def execute_buy(
     contract_address: str,
     sol_amount: float,
     settings: Settings,
-) -> tuple[str, float]:
+) -> tuple[str, float, int]:
     """Buy a token with SOL via Jupiter with auto-retry on increasing slippage.
 
     Tries at 5% → 10% → 15% slippage before giving up.
 
     Returns:
-        (tx_signature, tokens_received)
+        (tx_signature, tokens_received, decimals)
     """
     amount_lamports = int(sol_amount * LAMPORTS_PER_SOL)
+    decimals = await _get_token_decimals(contract_address, session, settings)
+    client = await _get_healthy_client(client, settings)
 
     for attempt, slippage_bps in enumerate(_BUY_SLIPPAGE_TIERS):
         try:
@@ -136,7 +181,7 @@ async def execute_buy(
             if settings.PAPER_MODE:
                 tx_sig = f"paper-buy-{uuid.uuid4().hex[:12]}"
                 logger.info("PAPER BUY executed", tx=tx_sig, token=contract_address, sol=sol_amount)
-                return (tx_sig, tokens_received)
+                return (tx_sig, tokens_received, decimals)
 
             # Live execution
             tx_bytes = await get_swap_transaction(
@@ -146,38 +191,12 @@ async def execute_buy(
             logger.info("BUY executed", tx=tx_sig, token=contract_address, sol=sol_amount,
                         slippage_bps=slippage_bps, attempt=attempt + 1)
 
-            # Verify transaction succeeded on-chain
-            # Solana TXs can take 10-15s to finalize — wait 5s initially, then 5 retries at 3s
-            await asyncio.sleep(5)
-            for verify_attempt in range(5):
-                try:
-                    tx_resp = await client.get_transaction(
-                        Signature.from_string(tx_sig),
-                        max_supported_transaction_version=0,
-                    )
-                    if tx_resp.value is None:
-                        if verify_attempt < 4:
-                            await asyncio.sleep(3)
-                            continue
-                        raise TransactionFailedError(
-                            f"Transaction not found on-chain after 5 attempts: {tx_sig}"
-                        )
-                    if tx_resp.value.transaction.meta.err:
-                        raise TransactionFailedError(
-                            f"Transaction failed on-chain: {tx_resp.value.transaction.meta.err} TX: {tx_sig}"
-                        )
-                    break  # TX confirmed and no error
-                except TransactionFailedError:
-                    raise
-                except Exception as verify_err:
-                    if verify_attempt < 4:
-                        await asyncio.sleep(3)
-                        continue
-                    raise TransactionFailedError(
-                        f"Could not verify transaction: {verify_err} TX: {tx_sig}"
-                    ) from verify_err
+            # Verify transaction in background — don't block the buy path
+            asyncio.create_task(
+                _verify_transaction(client, tx_sig, contract_address)
+            )
 
-            return (tx_sig, tokens_received)
+            return (tx_sig, tokens_received, decimals)
 
         except Exception as e:
             error_str = str(e)
@@ -214,6 +233,7 @@ async def execute_sell(
     Returns:
         (tx_signature, sol_received)
     """
+    client = await _get_healthy_client(client, settings)
     # On-chain balance check before sell (skip in paper mode)
     if not settings.PAPER_MODE:
         actual_balance = await _get_actual_token_balance(client, keypair.pubkey(), contract_address)
@@ -329,7 +349,7 @@ async def execute_buy_split(
     settings: Settings,
     num_splits: int = 3,
     delay_seconds: int = 10,
-) -> tuple[list[str], float]:
+) -> tuple[list[str], float, int]:
     """Buy a token with SOL via Jupiter, splitting into multiple smaller orders.
 
     This reduces price impact by spreading the buy over time.
@@ -341,6 +361,7 @@ async def execute_buy_split(
     tx_sigs: list[str] = []
     total_tokens: float = 0.0
 
+    split_decimals: int = 9
     for i in range(num_splits):
         logger.info(
             "Split order",
@@ -349,7 +370,7 @@ async def execute_buy_split(
             token=contract_address,
         )
         try:
-            tx_sig, tokens = await execute_buy(
+            tx_sig, tokens, split_decimals = await execute_buy(
                 client, keypair, session, contract_address, sol_per_split, settings,
             )
             tx_sigs.append(tx_sig)
@@ -380,7 +401,7 @@ async def execute_buy_split(
         successful_splits=len(tx_sigs),
         total_splits=num_splits,
     )
-    return (tx_sigs, total_tokens)
+    return (tx_sigs, total_tokens, split_decimals)
 
 
 async def _sign_and_send(

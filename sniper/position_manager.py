@@ -1,7 +1,6 @@
 """Position monitoring — time-based phase exits with trailing tiers."""
 
 import asyncio
-import math
 from datetime import datetime, timezone
 
 import aiohttp
@@ -11,7 +10,7 @@ from solders.keypair import Keypair
 
 from sniper.config import Settings
 from sniper.db import Database
-from sniper.executor import execute_buy, execute_sell, _decimals_cache
+from sniper.executor import execute_buy, execute_sell
 from sniper.telegram_notify import send_telegram
 
 logger = structlog.get_logger()
@@ -21,6 +20,7 @@ logger = structlog.get_logger()
 
 async def _fetch_position_data(
     session: aiohttp.ClientSession, contract_address: str, token_amount: int,
+    decimals: int = 9,
 ) -> tuple[float | None, float | None, float]:
     """Fetch price, mcap, and sell ratio from DexScreener in one call.
 
@@ -39,7 +39,6 @@ async def _fetch_position_data(
             price_native = pair.get("priceNative")
             value_sol = None
             if price_native:
-                decimals = _decimals_cache.get(contract_address, 6 if contract_address.endswith("pump") else 9)
                 human_tokens = token_amount / (10 ** decimals)
                 value_sol = human_tokens * float(price_native)
             # Sell ratio
@@ -86,7 +85,8 @@ async def check_positions(
 
     # Batch price check: single DexScreener call per active position
     data_tasks = [
-        _fetch_position_data(session, pos.contract_address, int(pos.entry_token_amount))
+        _fetch_position_data(session, pos.contract_address, int(pos.entry_token_amount),
+                             decimals=pos.decimals if pos.decimals is not None else 9)
         for pos in active_positions
     ]
     position_data = await asyncio.gather(*data_tasks, return_exceptions=True)
@@ -103,37 +103,33 @@ async def check_positions(
         pnl_pct = ((current_value - pos.entry_sol) / pos.entry_sol) * 100
         age_minutes = (datetime.now(timezone.utc) - pos.opened_at).total_seconds() / 60
 
-        # Dynamic phase timing: scale by liquidity
-        # Reference: $50K mcap = 1.0x (standard phases)
-        # $12.5K mcap = 0.5x (half the time), $200K mcap = 2.0x (double)
-        liq = pos.entry_price_usd or 50000  # Use entry mcap as proxy for liq
-        liq_factor = max(0.5, min(2.0, math.sqrt(liq / 50000)))
+        # Use fixed phase timings from settings directly
+        protection_end = settings.PROTECTION_WINDOW_MIN
+        momentum_end = settings.MOMENTUM_CHECK_MIN
+        max_hold = settings.MAX_HOLD_MIN
 
-        protection_end = settings.PROTECTION_WINDOW_MIN * liq_factor
-        momentum_end = settings.MOMENTUM_CHECK_MIN * liq_factor
-        max_hold = settings.MAX_HOLD_MIN * liq_factor
-
-        # --- Profit-taking ladder (independent of trailing) ---
-        # Rung 1: sell 25% at +50%
-        if (settings.PROFIT_LADDER_ENABLED
-                and pnl_pct >= settings.PROFIT_LADDER_PCT
-                and pos.partial_exit_tier < 1
-                and pos.id is not None):
-            await _partial_sell(
-                db, client, keypair, session, settings,
-                pos, 0.25, pnl_pct, actions, tier=1,
-            )
-            continue  # Re-evaluate next cycle
-        # Rung 2: sell another 25% at +100%
-        if (settings.PROFIT_LADDER_ENABLED
-                and pnl_pct >= 100
-                and pos.partial_exit_tier < 2
-                and pos.id is not None):
-            await _partial_sell(
-                db, client, keypair, session, settings,
-                pos, 0.33, pnl_pct, actions, tier=2,  # 33% of remaining = 25% of original
-            )
-            continue
+        # --- Profit-taking ladder (only when trailing is NOT active) ---
+        if not pos.trailing_active:
+            # Rung 1: sell 25% at +50%
+            if (settings.PROFIT_LADDER_ENABLED
+                    and pnl_pct >= settings.PROFIT_LADDER_PCT
+                    and pos.partial_exit_tier < 1
+                    and pos.id is not None):
+                await _partial_sell(
+                    db, client, keypair, session, settings,
+                    pos, 0.25, pnl_pct, actions, tier=1,
+                )
+                continue  # Re-evaluate next cycle
+            # Rung 2: sell another 25% at +100%
+            if (settings.PROFIT_LADDER_ENABLED
+                    and pnl_pct >= 100
+                    and pos.partial_exit_tier < 2
+                    and pos.id is not None):
+                await _partial_sell(
+                    db, client, keypair, session, settings,
+                    pos, 0.33, pnl_pct, actions, tier=2,  # 33% of remaining = 25% of original
+                )
+                continue
 
         # --- Trailing stop management (runs BEFORE phase checks) ---
         if pos.trailing_active and pos.id is not None:
@@ -351,7 +347,7 @@ async def check_positions(
                         logger.info("DCA opportunity", token=pos.token_name, pnl=f"{pnl_pct:.1f}%")
                         try:
                             dca_amount = pos.entry_sol * 0.5  # Buy half the original size
-                            tx_sig, tokens = await execute_buy(
+                            tx_sig, tokens, _dca_decimals = await execute_buy(
                                 client, keypair, session, pos.contract_address, dca_amount, settings,
                             )
                             # Update position with new tokens and adjusted entry
@@ -452,9 +448,8 @@ async def _partial_sell(
     if pos.id is None:
         return
     try:
-        # Use integer math to avoid float precision loss on large token amounts
         total_tokens = int(pos.entry_token_amount)
-        sell_tokens = total_tokens * int(fraction * 100) // 100
+        sell_tokens = round(total_tokens * fraction)
         remaining_tokens = total_tokens - sell_tokens
         tx_sig, sol_received = await execute_sell(
             client, keypair, session,
