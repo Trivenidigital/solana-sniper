@@ -41,17 +41,23 @@ async def read_new_signals(
             # top3_wallet_concentration, holder_count) into the alerts table
             # at alert time. For now, read only from alerts and use defaults
             # for fields that may not yet be present.
+            # Query only columns that exist in the alerts table.
+            # The scout's alerts table has: contract_address, chain,
+            # conviction_score, alerted_at, market_cap_usd.
+            # Other fields default to 0/empty — the live liquidity check
+            # in main.py validates before buying.
             cursor = await conn.execute(
                 """
-                SELECT a.contract_address, a.chain, a.token_name, a.ticker,
+                SELECT a.contract_address, a.chain,
+                       '' AS token_name, '' AS ticker,
                        a.conviction_score,
                        COALESCE(a.market_cap_usd, 0) AS market_cap_usd,
-                       COALESCE(a.liquidity_usd, 0) AS liquidity_usd,
-                       COALESCE(a.volume_24h_usd, 0) AS volume_24h_usd,
+                       0 AS liquidity_usd,
+                       0 AS volume_24h_usd,
                        a.alerted_at,
-                       COALESCE(a.token_age_days, 0) AS token_age_days,
-                       COALESCE(a.top3_wallet_concentration, 0) AS top3_wallet_concentration,
-                       COALESCE(a.holder_count, 0) AS holder_count
+                       0 AS token_age_days,
+                       0 AS top3_wallet_concentration,
+                       0 AS holder_count
                 FROM alerts a
                 WHERE a.chain = 'solana'
                   AND a.conviction_score >= ?
