@@ -55,6 +55,7 @@ class Position(BaseModel):
     partial_exit_tier: int = 0
     sell_fail_count: int = 0
     dca_completed: int = 0
+    decimals: int | None = None
 
 
 class JupiterQuote(BaseModel):

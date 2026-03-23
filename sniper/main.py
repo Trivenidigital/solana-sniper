@@ -182,7 +182,11 @@ async def main() -> None:
                             logger.info("Signals skipped", count=len(skipped))
                             await send_telegram(skip_msg, settings)
 
+                        # Fetch SOL balance once before iterating signals
+                        cycle_balance = await get_sol_balance(rpc_client, pubkey) if not settings.PAPER_MODE else 1.0
+
                         for sig_data in actionable:
+                            safety_passed = False
                             # Pre-trade checks
                             open_count = await db.count_open_positions()
                             if open_count >= settings.MAX_OPEN_POSITIONS:
@@ -190,7 +194,7 @@ async def main() -> None:
                                 break
 
                             # Position sizing: Kelly → liquidity adjustment
-                            bal = await get_sol_balance(rpc_client, pubkey) if not settings.PAPER_MODE else 1.0
+                            bal = cycle_balance
                             kelly_bet = await calculate_kelly_bet(db, bal, settings)
 
                             # Conviction-weighted sizing (boost if smart money detected)
@@ -244,8 +248,7 @@ async def main() -> None:
                                 break
 
                             if not settings.PAPER_MODE:
-                                bal = await get_sol_balance(rpc_client, pubkey)
-                                max_available = bal - 0.01  # Reserve for gas
+                                max_available = cycle_balance - 0.01  # Reserve for gas
                                 if max_available < settings.KELLY_MIN_BET:
                                     logger.warning("Insufficient SOL", balance=bal)
                                     break
@@ -254,25 +257,34 @@ async def main() -> None:
                                         original=f"{buy_amount:.4f}", capped=f"{max_available:.4f}")
                                     buy_amount = max_available
 
-                            # Pre-buy safety: Rugcheck (primary) → GoPlus (fallback) → fail-closed
-                            safety_passed = False
+                            # Pre-buy safety: Rugcheck full report (single call for both
+                            # summary + bundle check) → GoPlus (fallback) → fail-closed
+                            # Known DEX/LP program addresses to exclude from holder checks
+                            KNOWN_PROGRAMS = {
+                                "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",  # Raydium LP
+                                "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # Raydium V4
+                                "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",  # Raydium CPMM
+                                "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",   # Orca
+                                "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",   # Meteora
+                                "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",    # Raydium LP V2
+                            }
                             try:
                                 async with session.get(
-                                    f"https://api.rugcheck.xyz/v1/tokens/{sig_data.contract_address}/report/summary",
+                                    f"https://api.rugcheck.xyz/v1/tokens/{sig_data.contract_address}/report",
                                     timeout=aiohttp.ClientTimeout(total=5),
-                                ) as rc_resp:
-                                    if rc_resp.status == 200:
-                                        rc_data = await rc_resp.json()
-                                        rc_score = rc_data.get("score", 0)
-                                        rc_risks = rc_data.get("risks", [])
+                                ) as rc_full_resp:
+                                    if rc_full_resp.status == 200:
+                                        rc_full = await rc_full_resp.json()
+
+                                        # --- Safety check (extracted from full report) ---
+                                        rc_score = rc_full.get("score", 0)
+                                        rc_risks = rc_full.get("risks", [])
                                         rc_names = [r.get("name", "") if isinstance(r, dict) else str(r) for r in rc_risks]
-                                        # Block on high score, rug history, or dangerous risk patterns
                                         danger_keywords = ["rug", "lp unlocked", "honeypot", "mintable", "freeze"]
                                         has_danger = any(
                                             any(kw in r.lower() for kw in danger_keywords)
                                             for r in rc_names
                                         )
-                                        # 10000+ always block, 5000+ block if dangerous keywords present
                                         if rc_score >= 10000 or (rc_score >= 5000 and has_danger) or has_danger:
                                             logger.warning(
                                                 "Rugcheck BLOCKED pre-buy",
@@ -293,28 +305,9 @@ async def main() -> None:
                                             risk_score=rc_score,
                                         )
                                         safety_passed = True
-                            except Exception as e:
-                                logger.warning("Rugcheck failed, trying GoPlus fallback", error=str(e))
 
-                            # Bundle / insider detection via Rugcheck full report
-                            # Known DEX/LP program addresses to exclude from holder checks
-                            KNOWN_PROGRAMS = {
-                                "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",  # Raydium LP
-                                "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # Raydium V4
-                                "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",  # Raydium CPMM
-                                "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",   # Orca
-                                "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",   # Meteora
-                                "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",    # Raydium LP V2
-                            }
-                            try:
-                                async with session.get(
-                                    f"https://api.rugcheck.xyz/v1/tokens/{sig_data.contract_address}/report",
-                                    timeout=aiohttp.ClientTimeout(total=5),
-                                ) as rc_full_resp:
-                                    if rc_full_resp.status == 200:
-                                        rc_full = await rc_full_resp.json()
+                                        # --- Bundle / insider detection (from same report) ---
                                         top_holders = rc_full.get("topHolders", [])
-                                        # Filter: only real wallets (exclude LP pools/programs, malformed entries)
                                         real_holders = [
                                             h for h in top_holders
                                             if isinstance(h, dict)
@@ -327,7 +320,6 @@ async def main() -> None:
                                             top5_pct = sum(h.get("pct", 0) for h in real_holders[:5])
                                             insider_pct = sum(h.get("pct", 0) for h in real_holders if h.get("isInsider") or h.get("owner") == creator)
 
-                                            # Block: creator/insider holds > 15%
                                             is_creator_top = top1_addr == creator
                                             top1_insider = real_holders[0].get("isInsider", False)
                                             if top1_pct > 15 and (is_creator_top or top1_insider):
@@ -344,7 +336,6 @@ async def main() -> None:
                                                     settings,
                                                 )
                                                 continue
-                                            # Block: insiders/creator collectively > 25%
                                             if insider_pct > 25:
                                                 logger.warning(
                                                     "Insider accumulation detected",
@@ -365,7 +356,7 @@ async def main() -> None:
                                                 top5_pct=f"{top5_pct:.1f}%",
                                             )
                             except Exception as e:
-                                logger.debug("Bundle check failed", error=str(e))
+                                logger.warning("Rugcheck failed, trying GoPlus fallback", error=str(e))
 
                             # Helius-based bundle detection — only for fresh tokens (<30 min old)
                             # Older tokens: bundler already sold, organic holders took over
@@ -467,6 +458,7 @@ async def main() -> None:
                                             entry_price_usd=sig_data.market_cap_usd or 0,
                                             entry_tx=r["tx"],
                                             paper=settings.PAPER_MODE,
+                                            decimals=r.get("decimals"),
                                         )
                                         pos_id = await db.open_position(pos)
                                         await db.log_trade(
@@ -500,7 +492,7 @@ async def main() -> None:
                                     # Single wallet buy (with timeout)
                                     try:
                                         if settings.SPLIT_ORDERS:
-                                            tx_sigs, tokens = await asyncio.wait_for(
+                                            tx_sigs, tokens, decimals = await asyncio.wait_for(
                                                 execute_buy_split(
                                                     rpc_client, keypair, session,
                                                     sig_data.contract_address,
@@ -513,7 +505,7 @@ async def main() -> None:
                                             )
                                             tx_sig = tx_sigs[0]
                                         else:
-                                            tx_sig, tokens = await asyncio.wait_for(
+                                            tx_sig, tokens, decimals = await asyncio.wait_for(
                                                 execute_buy(
                                                     rpc_client, keypair, session,
                                                     sig_data.contract_address,
@@ -539,6 +531,7 @@ async def main() -> None:
                                         entry_price_usd=sig_data.market_cap_usd or 0,
                                         entry_tx=tx_sig,
                                         paper=settings.PAPER_MODE,
+                                        decimals=decimals,
                                     )
                                     pos_id = await db.open_position(pos)
                                     await db.log_trade(

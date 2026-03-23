@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     MIN_HOLDER_COUNT: int = 5
 
     # Signal freshness
-    MAX_SIGNAL_AGE_SECONDS: int = 30
+    MAX_SIGNAL_AGE_SECONDS: int = 120
 
     # Jupiter
     JUPITER_API_URL: str = "https://lite-api.jup.ag/swap/v1"

@@ -4,8 +4,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
+import structlog
 
 from sniper.models import Position
+
+logger = structlog.get_logger()
 
 
 class Database:
@@ -91,13 +94,23 @@ class Database:
             ("partial_exit_tier", "INTEGER DEFAULT 0"),
             ("sell_fail_count", "INTEGER DEFAULT 0"),
             ("dca_completed", "INTEGER DEFAULT 0"),
+            ("decimals", "INTEGER"),
         ]:
             try:
                 await self._conn.execute(
                     f"ALTER TABLE positions ADD COLUMN {col} {typedef}"
                 )
-            except Exception:
-                pass  # column already exists
+            except Exception as e:
+                logger.debug("Migration skipped (column likely exists)", column=col, error=str(e))
+
+        # Add indexes
+        try:
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_positions_address_status "
+                "ON positions (contract_address, status)"
+            )
+        except Exception as e:
+            logger.debug("Index creation skipped", error=str(e))
 
     # ------------------------------------------------------------------
     # Positions
@@ -109,13 +122,13 @@ class Database:
         cursor = await self._conn.execute(
             """INSERT INTO positions
                (contract_address, token_name, ticker, entry_sol, entry_token_amount,
-                entry_price_usd, entry_tx, status, paper, opened_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
+                entry_price_usd, entry_tx, status, paper, opened_at, decimals)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)""",
             (
                 pos.contract_address, pos.token_name, pos.ticker,
                 pos.entry_sol, pos.entry_token_amount, pos.entry_price_usd,
                 pos.entry_tx, 1 if pos.paper else 0,
-                pos.opened_at.isoformat(),
+                pos.opened_at.isoformat(), pos.decimals,
             ),
         )
         await self._conn.commit()
@@ -175,7 +188,7 @@ class Database:
         if self._conn is None:
             raise RuntimeError("Database not initialized.")
         cursor = await self._conn.execute(
-            "SELECT COALESCE(SUM(entry_sol), 0) FROM positions WHERE status='open'"
+            "SELECT COALESCE(SUM(entry_sol), 0) FROM positions WHERE status='open' AND paper=0"
         )
         row = await cursor.fetchone()
         return float(row[0]) if row else 0.0
@@ -196,6 +209,7 @@ class Database:
         cursor = await self._conn.execute(
             "SELECT pnl_sol, pnl_pct, exit_reason FROM positions "
             "WHERE status='closed' AND pnl_sol IS NOT NULL AND pnl_sol != 0 "
+            "AND exit_reason NOT LIKE 'partial%' "
             "ORDER BY closed_at DESC LIMIT ?",
             (limit,),
         )
@@ -367,6 +381,7 @@ class Database:
         d["partial_exit_tier"] = int(d.get("partial_exit_tier", 0))
         d["sell_fail_count"] = int(d.get("sell_fail_count", 0))
         d["dca_completed"] = int(d.get("dca_completed", 0))
+        d["decimals"] = d.get("decimals")  # may be None for legacy rows
         if d.get("opened_at"):
             d["opened_at"] = datetime.fromisoformat(d["opened_at"])
         if d.get("closed_at"):
