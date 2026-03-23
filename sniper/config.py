@@ -132,6 +132,11 @@ class Settings(BaseSettings):
     BACKFILL_MAX_MINUTES: int = 30  # Max age for reconnect backfill
     HELIUS_API_KEY: str = ""  # Required for copy trading WebSocket
 
+    # GODMODE bundle detection
+    GODMODE_URL: str = "http://localhost:8085"
+    GODMODE_ENABLED: bool = True
+    GODMODE_BUNDLE_THRESHOLD: int = 30
+
     # Dashboard API key (required for /api/trade endpoint)
     DASHBOARD_API_KEY: str = ""
 
