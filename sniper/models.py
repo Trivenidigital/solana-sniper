@@ -60,6 +60,7 @@ class Position(BaseModel):
     decimals: int | None = None
     conviction_score: float | None = None
     entry_liquidity_usd: float = 0
+    entry_mcap_usd: float = 0
 
 
 class JupiterQuote(BaseModel):

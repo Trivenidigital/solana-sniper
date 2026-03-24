@@ -256,6 +256,7 @@ async def main() -> None:
                             # Pre-buy safety: real-time liquidity check via DexScreener
                             # Fetched BEFORE sizing so live_liq feeds into scaling
                             live_liq = 0.0
+                            live_mcap = 0.0
                             try:
                                 async with session.get(
                                     f"https://api.dexscreener.com/tokens/v1/solana/{sig_data.contract_address}",
@@ -264,6 +265,7 @@ async def main() -> None:
                                     if dex_resp.status == 200:
                                         dex_data = await dex_resp.json()
                                         if isinstance(dex_data, list) and dex_data:
+                                            live_mcap = float(dex_data[0].get("marketCap") or 0)
                                             liq_obj = dex_data[0].get("liquidity")
                                             if liq_obj and isinstance(liq_obj, dict):
                                                 live_liq = float(liq_obj.get("usd", 0) or 0)
@@ -527,6 +529,7 @@ async def main() -> None:
                                             decimals=r.get("decimals"),
                                             conviction_score=sig_data.conviction_score,
                                             entry_liquidity_usd=live_liq,
+                                            entry_mcap_usd=live_mcap,
                                         )
                                         pos_id = await db.open_position(pos)
                                         await db.log_trade(

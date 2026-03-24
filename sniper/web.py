@@ -333,11 +333,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="table-wrap">
   <table>
     <tr>
-      <th>Token</th><th>Entry</th><th>Current Value</th><th>PnL</th><th>Opened</th><th>Trail</th><th>Mode</th><th>Action</th>
+      <th>Token</th><th>Entry</th><th>Current Value</th><th>Entry MC</th><th>Current MC</th><th>PnL</th><th>Opened</th><th>Trail</th><th>Mode</th><th>Action</th>
     </tr>
     {% for p in open_positions %}
     <tr>
-      <td><strong>{{ p.token_name }}</strong> ({{ p.ticker }})</td>
+      <td><a href="https://dexscreener.com/solana/{{ p.contract_address }}" target="_blank" style="color:inherit;text-decoration:none;"><strong>{{ p.token_name }}</strong> ({{ p.ticker }})</a></td>
       <td>{{ "%.4f"|format(p.entry_sol) }} SOL</td>
       <td>
         {% if p.current_value is not none %}
@@ -347,11 +347,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         {% endif %}
       </td>
       <td>
+        {% if p.entry_mcap_usd %}
+          ${{ "{:,}".format(p.entry_mcap_usd | int) }}
+        {% else %}
+          <span style="color:var(--text-muted)">—</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if p.current_mcap %}
+          ${{ "{:,}".format(p.current_mcap | int) }}
+        {% else %}
+          <span style="color:var(--text-muted)">—</span>
+        {% endif %}
+      </td>
+      <td>
         {% if p.current_value is not none %}
           {% set pnl = p.current_value - p.entry_sol %}
           {% set pnl_pct = (pnl / p.entry_sol * 100) if p.entry_sol > 0 else 0 %}
+          {% set pnl_usd = pnl * sol_price %}
           <span class="{{ 'positive' if pnl >= 0 else 'negative' }}">
             {{ "%+.4f"|format(pnl) }} ({{ "%+.1f"|format(pnl_pct) }}%)
+            <br><small>${{ "%+.2f"|format(pnl_usd) }}</small>
           </span>
         {% else %}
           <span style="color:var(--text-muted)">—</span>
@@ -384,10 +400,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <tr><th>Token</th><th>Entry</th><th>Exit</th><th>PnL SOL</th><th>PnL %</th><th>Reason</th><th>Duration</th></tr>
     {% for p in closed_positions %}
     <tr>
-      <td><strong>{{ p.token_name }}</strong></td>
+      <td><a href="https://dexscreener.com/solana/{{ p.contract_address }}" target="_blank" style="color:inherit;text-decoration:none;"><strong>{{ p.token_name }}</strong></a></td>
       <td>{{ "%.4f"|format(p.entry_sol) }}</td>
       <td>{{ "%.4f"|format(p.exit_sol or 0) }}</td>
-      <td class="{{ 'positive' if (p.pnl_sol or 0) >= 0 else 'negative' }}">{{ "%+.4f"|format(p.pnl_sol or 0) }}</td>
+      <td class="{{ 'positive' if (p.pnl_sol or 0) >= 0 else 'negative' }}">{{ "%+.4f"|format(p.pnl_sol or 0) }}<br><small>${{ "%+.2f"|format((p.pnl_sol or 0) * sol_price) }}</small></td>
       <td class="{{ 'positive' if (p.pnl_pct or 0) >= 0 else 'negative' }}">{{ "%+.1f"|format(p.pnl_pct or 0) }}%</td>
       <td><span class="tag {% if p.exit_reason == 'stop_loss' %}tag-sl{% elif p.exit_reason == 'take_profit' %}tag-tp{% elif p.exit_reason == 'trailing_stop' %}tag-trail{% else %}tag-closed{% endif %}">{{ (p.exit_reason or "manual") | upper }}</span></td>
       <td>{{ p.duration or "—" }}</td>
@@ -645,13 +661,27 @@ async def handle_dashboard(request: web.Request) -> web.Response:
     sol_balance_task = _get_sol_balance()
     sol_price, sol_balance = await asyncio.gather(sol_price_task, sol_balance_task)
 
-    # Fetch current values for open positions
+    # Fetch current values + market cap for open positions
     unrealized_pnl = 0.0
     for p in open_positions:
         val = await _get_token_value_sol(p["contract_address"], int(p["entry_token_amount"]))
         p["current_value"] = val
+        p["current_mcap"] = None
         if val is not None:
             unrealized_pnl += val - p["entry_sol"]
+        # Fetch market cap from DexScreener
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"https://api.dexscreener.com/tokens/v1/solana/{p['contract_address']}",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    if resp.status == 200:
+                        dex_data = await resp.json()
+                        if isinstance(dex_data, list) and dex_data:
+                            p["current_mcap"] = float(dex_data[0].get("marketCap") or 0)
+        except Exception:
+            pass
 
     open_count = len(open_positions)
     exposure = sum(p["entry_sol"] for p in open_positions)
