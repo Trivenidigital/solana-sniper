@@ -416,6 +416,18 @@ async def main() -> None:
                                             and h.get("address", "") not in pair_addresses
                                             and h.get("owner", "") not in pair_addresses
                                         ]
+                                        logger.debug(
+                                            "Holder filter debug",
+                                            token=sig_data.token_name,
+                                            raw_count=len(top_holders),
+                                            real_count=len(real_holders),
+                                            pair_count=len(pair_addresses),
+                                            pairs=list(pair_addresses)[:3],
+                                            top3_raw=[
+                                                f"{h.get('owner','')[:12]}={h.get('pct',0):.1f}%"
+                                                for h in top_holders[:3]
+                                            ],
+                                        )
                                         if real_holders:
                                             creator = rc_full.get("creator", "")
                                             top1_pct = real_holders[0].get("pct", 0)
@@ -426,8 +438,9 @@ async def main() -> None:
                                             is_creator_top = top1_addr == creator
                                             top1_insider = real_holders[0].get("isInsider", False)
 
-                                            # Hard block: any single wallet > 15%
-                                            if top1_pct > 15:
+                                            # Hard block: any single real wallet > 25%
+                                            # LP pools hold ~20% on Pump.fun tokens — can't reliably filter all
+                                            if top1_pct > 25:
                                                 reason = "(CREATOR)" if is_creator_top else "(INSIDER)" if top1_insider else "(WHALE)"
                                                 logger.warning(
                                                     "Blocked — single holder too concentrated",
