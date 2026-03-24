@@ -61,6 +61,7 @@ class Position(BaseModel):
     conviction_score: float | None = None
     entry_liquidity_usd: float = 0
     entry_mcap_usd: float = 0
+    manual: bool = False
 
 
 class JupiterQuote(BaseModel):

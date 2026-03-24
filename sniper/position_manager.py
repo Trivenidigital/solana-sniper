@@ -100,10 +100,11 @@ async def check_positions(
 
     actions: list[str] = []
 
-    # Filter out paper positions — user manages these manually
-    active_positions = [pos for pos in positions if not pos.paper]
-    if len(active_positions) < len(positions):
-        logger.debug("Skipping paper positions", count=len(positions) - len(active_positions))
+    # Filter out paper and manual positions — user manages these via dashboard
+    active_positions = [pos for pos in positions if not pos.paper and not pos.manual]
+    skipped = len(positions) - len(active_positions)
+    if skipped:
+        logger.debug("Skipping paper/manual positions", count=skipped)
 
     # Batch price check: single DexScreener call per active position
     data_tasks = [
