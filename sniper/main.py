@@ -308,9 +308,13 @@ async def main() -> None:
                                         buy_amount=f"{buy_amount:.4f} SOL",
                                     )
 
-                            # Apply floor — respect liquidity scaling for thin tokens
-                            if live_liq >= 10000 or live_liq == 0:
+                            # Apply floor — only if liquidity scaling didn't reduce the bet
+                            if live_liq >= 20000 or live_liq == 0:
+                                # No scaling happened — apply normal floor
                                 buy_amount = max(settings.KELLY_MIN_BET, buy_amount)
+                            elif live_liq >= 10000:
+                                # Scaling applied but decent liquidity — lower floor
+                                buy_amount = max(settings.KELLY_MIN_BET * 0.5, buy_amount)
                             else:
                                 buy_amount = max(0.1, buy_amount)  # absolute minimum for gas
 
