@@ -95,6 +95,7 @@ class Database:
             ("sell_fail_count", "INTEGER DEFAULT 0"),
             ("dca_completed", "INTEGER DEFAULT 0"),
             ("decimals", "INTEGER"),
+            ("conviction_score", "REAL"),
         ]:
             try:
                 await self._conn.execute(
@@ -122,13 +123,15 @@ class Database:
         cursor = await self._conn.execute(
             """INSERT INTO positions
                (contract_address, token_name, ticker, entry_sol, entry_token_amount,
-                entry_price_usd, entry_tx, status, paper, opened_at, decimals)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)""",
+                entry_price_usd, entry_tx, status, paper, opened_at, decimals,
+                conviction_score)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)""",
             (
                 pos.contract_address, pos.token_name, pos.ticker,
                 pos.entry_sol, pos.entry_token_amount, pos.entry_price_usd,
                 pos.entry_tx, 1 if pos.paper else 0,
                 pos.opened_at.isoformat(), pos.decimals,
+                pos.conviction_score,
             ),
         )
         await self._conn.commit()
@@ -382,6 +385,7 @@ class Database:
         d["sell_fail_count"] = int(d.get("sell_fail_count", 0))
         d["dca_completed"] = int(d.get("dca_completed", 0))
         d["decimals"] = d.get("decimals")  # may be None for legacy rows
+        d["conviction_score"] = d.get("conviction_score")  # may be None for legacy rows
         if d.get("opened_at"):
             d["opened_at"] = datetime.fromisoformat(d["opened_at"])
         if d.get("closed_at"):

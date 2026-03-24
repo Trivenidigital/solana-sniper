@@ -42,6 +42,8 @@ class Position(BaseModel):
         "stop_loss", "take_profit", "trailing_stop", "manual",
         "rug_detected", "momentum_lost", "pump_window_expired", "max_hold_exceeded",
         "sell_pressure", "unsellable", "breakeven_stop",
+        "conviction_rug_detected", "conviction_hard_stop",
+        "conviction_max_hold", "conviction_trailing_stop",
     ] | None = None
     status: Literal["open", "closed"] = "open"
     pnl_sol: float | None = None
@@ -56,6 +58,7 @@ class Position(BaseModel):
     sell_fail_count: int = 0
     dca_completed: int = 0
     decimals: int | None = None
+    conviction_score: float | None = None
 
 
 class JupiterQuote(BaseModel):

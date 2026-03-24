@@ -103,6 +103,136 @@ async def check_positions(
         pnl_pct = ((current_value - pos.entry_sol) / pos.entry_sol) * 100
         age_minutes = (datetime.now(timezone.utc) - pos.opened_at).total_seconds() / 60
 
+        # --- Conviction hold: patient exit logic for high-score tokens ---
+        conviction_score = pos.conviction_score or 0
+        is_conviction_hold = (
+            settings.CONVICTION_HOLD_ENABLED
+            and conviction_score >= settings.CONVICTION_HOLD_MIN_SCORE
+        )
+
+        if is_conviction_hold:
+            # Update peak value
+            if current_value > (pos.peak_value_sol or 0) and pos.id:
+                pos.peak_value_sol = current_value
+                await db.update_peak_value(pos.id, current_value)
+
+            # Check 1: Liquidity rug — fetch live from DexScreener
+            liq_usd = 0.0
+            try:
+                async with session.get(
+                    f"https://api.dexscreener.com/tokens/v1/solana/{pos.contract_address}",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    if resp.status == 200:
+                        pairs = await resp.json()
+                        if pairs and isinstance(pairs, list):
+                            liq_obj = pairs[0].get("liquidity")
+                            if liq_obj and isinstance(liq_obj, dict):
+                                liq_usd = float(liq_obj.get("usd", 0) or 0)
+            except Exception:
+                pass
+
+            # If liquidity dropped 70%+ from entry → real rug
+            entry_liq = pos.entry_price_usd or 0
+            if liq_usd > 0 and entry_liq > 0:
+                liq_drop_pct = ((entry_liq - liq_usd) / entry_liq) * 100
+                if liq_drop_pct >= settings.CONVICTION_HOLD_RUG_LIQUIDITY_DROP_PCT:
+                    logger.warning(
+                        "Conviction hold: liquidity rug detected",
+                        token=pos.token_name,
+                        conviction=conviction_score,
+                        liq_usd=f"${liq_usd:,.0f}",
+                        entry_liq=f"${entry_liq:,.0f}",
+                        liq_drop_pct=f"{liq_drop_pct:.1f}%",
+                    )
+                    action = await _close_position(
+                        db, client, keypair, session, settings,
+                        pos.id, pos.contract_address, pos.token_name,
+                        int(pos.entry_token_amount), pos.entry_sol,
+                        current_value, pnl_pct, "conviction_rug_detected",
+                    )
+                    actions.append(action)
+                    continue
+
+            # Check 2: Hard stop at -70%
+            if pnl_pct <= -settings.CONVICTION_HOLD_HARD_STOP_PCT:
+                logger.warning(
+                    "Conviction hold: hard stop triggered",
+                    token=pos.token_name,
+                    conviction=conviction_score,
+                    pnl_pct=f"{pnl_pct:.1f}%",
+                )
+                action = await _close_position(
+                    db, client, keypair, session, settings,
+                    pos.id, pos.contract_address, pos.token_name,
+                    int(pos.entry_token_amount), pos.entry_sol,
+                    current_value, pnl_pct, "conviction_hard_stop",
+                )
+                actions.append(action)
+                continue
+
+            # Check 3: Max hold 4 hours (if not trailing)
+            if age_minutes > settings.CONVICTION_HOLD_MAX_HOLD_MIN and not pos.trailing_active:
+                logger.info(
+                    "Conviction hold: max hold exceeded",
+                    token=pos.token_name,
+                    conviction=conviction_score,
+                    age_minutes=f"{age_minutes:.1f}",
+                    max_hold_min=settings.CONVICTION_HOLD_MAX_HOLD_MIN,
+                )
+                action = await _close_position(
+                    db, client, keypair, session, settings,
+                    pos.id, pos.contract_address, pos.token_name,
+                    int(pos.entry_token_amount), pos.entry_sol,
+                    current_value, pnl_pct, "conviction_max_hold",
+                )
+                actions.append(action)
+                continue
+
+            # Check 4: Trailing at +50%, trail at 20%
+            if pnl_pct >= settings.CONVICTION_HOLD_TRAILING_ACTIVATE_PCT:
+                if not pos.trailing_active and pos.id:
+                    pos.trailing_active = True
+                    await db.set_trailing_active(pos.id)
+                    if pos.peak_value_sol is None or current_value > pos.peak_value_sol:
+                        pos.peak_value_sol = current_value
+                        await db.update_peak_value(pos.id, current_value)
+                    logger.info(
+                        "Conviction hold: trailing activated",
+                        token=pos.token_name,
+                        conviction=conviction_score,
+                        pnl_pct=f"{pnl_pct:.1f}%",
+                    )
+
+            if pos.trailing_active and pos.peak_value_sol:
+                drop_from_peak = (pos.peak_value_sol - current_value) / pos.peak_value_sol * 100
+                if drop_from_peak >= settings.CONVICTION_HOLD_TRAILING_PCT:
+                    logger.info(
+                        "Conviction hold: trailing stop triggered",
+                        token=pos.token_name,
+                        conviction=conviction_score,
+                        pnl_pct=f"{pnl_pct:.1f}%",
+                        drop_from_peak=f"{drop_from_peak:.1f}%",
+                    )
+                    action = await _close_position(
+                        db, client, keypair, session, settings,
+                        pos.id, pos.contract_address, pos.token_name,
+                        int(pos.entry_token_amount), pos.entry_sol,
+                        current_value, pnl_pct, "conviction_trailing_stop",
+                    )
+                    actions.append(action)
+                    continue
+
+            # Still holding — log and skip normal phase logic
+            logger.info(
+                "Conviction hold: holding",
+                token=pos.token_name,
+                conviction=conviction_score,
+                pnl_pct=f"{pnl_pct:.1f}%",
+                age_minutes=f"{age_minutes:.1f}",
+            )
+            continue  # SKIP normal phase logic
+
         # Use fixed phase timings from settings directly
         protection_end = settings.PROTECTION_WINDOW_MIN
         momentum_end = settings.MOMENTUM_CHECK_MIN

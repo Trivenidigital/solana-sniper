@@ -540,6 +540,7 @@ async def main() -> None:
                                             entry_tx=r["tx"],
                                             paper=settings.PAPER_MODE,
                                             decimals=r.get("decimals"),
+                                            conviction_score=sig_data.conviction_score,
                                         )
                                         pos_id = await db.open_position(pos)
                                         await db.log_trade(
@@ -613,6 +614,7 @@ async def main() -> None:
                                         entry_tx=tx_sig,
                                         paper=settings.PAPER_MODE,
                                         decimals=decimals,
+                                        conviction_score=sig_data.conviction_score,
                                     )
                                     pos_id = await db.open_position(pos)
                                     await db.log_trade(
