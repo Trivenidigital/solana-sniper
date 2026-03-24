@@ -345,17 +345,21 @@ async def main() -> None:
                             # Pre-buy safety: Rugcheck full report (single call for both
                             # summary + bundle check) → GoPlus (fallback) → fail-closed
                             # Known DEX/LP program addresses to exclude from holder checks
+                            # Check both address AND owner — LP pools have unique addresses
+                            # per token but share the same owner program
                             KNOWN_PROGRAMS = {
                                 "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",  # Raydium LP
                                 "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # Raydium V4
                                 "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",  # Raydium CPMM
-                                "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",   # Orca
-                                "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",   # Meteora
+                                "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",   # Orca Whirlpool
+                                "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",   # Meteora DLMM
                                 "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",    # Raydium LP V2
                                 "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",   # Pump.fun bonding curve
                                 "39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg",  # Pump.fun fee account
+                                "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",   # PumpSwap AMM
                                 "So11111111111111111111111111111111111111112",      # Wrapped SOL
                                 "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",    # Token program
+                                "11111111111111111111111111111111",                 # System Program (burned)
                             }
                             try:
                                 async with session.get(
@@ -401,6 +405,7 @@ async def main() -> None:
                                             h for h in top_holders
                                             if isinstance(h, dict)
                                             and h.get("address", "") not in KNOWN_PROGRAMS
+                                            and h.get("owner", "") not in KNOWN_PROGRAMS
                                         ]
                                         if real_holders:
                                             creator = rc_full.get("creator", "")
@@ -412,9 +417,8 @@ async def main() -> None:
                                             is_creator_top = top1_addr == creator
                                             top1_insider = real_holders[0].get("isInsider", False)
 
-                                            # Hard block: any single wallet > 25%
-                                            # (Pump.fun LP pools hold ~20% each — don't block those)
-                                            if top1_pct > 25:
+                                            # Hard block: any single real wallet > 15%
+                                            if top1_pct > 15:
                                                 reason = "(CREATOR)" if is_creator_top else "(INSIDER)" if top1_insider else "(WHALE)"
                                                 logger.warning(
                                                     "Blocked — single holder too concentrated",
@@ -429,9 +433,8 @@ async def main() -> None:
                                                 )
                                                 continue
 
-                                            # Hard block: top5 holders > 50%
-                                            # (Two LP pools at ~20% each = 40% baseline on Pump.fun)
-                                            if top5_pct > 50:
+                                            # Hard block: top5 real holders > 40%
+                                            if top5_pct > 40:
                                                 logger.warning(
                                                     "Blocked — top5 holders too concentrated",
                                                     token=sig_data.token_name,
