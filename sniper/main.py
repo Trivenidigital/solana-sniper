@@ -348,6 +348,10 @@ async def main() -> None:
                                 "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",   # Orca
                                 "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",   # Meteora
                                 "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",    # Raydium LP V2
+                                "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",   # Pump.fun bonding curve
+                                "39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg",  # Pump.fun fee account
+                                "So11111111111111111111111111111111111111112",      # Wrapped SOL
+                                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",    # Token program
                             }
                             try:
                                 async with session.get(
@@ -403,20 +407,37 @@ async def main() -> None:
 
                                             is_creator_top = top1_addr == creator
                                             top1_insider = real_holders[0].get("isInsider", False)
-                                            if top1_pct > 15 and (is_creator_top or top1_insider):
+
+                                            # Hard block: any single wallet > 15%
+                                            if top1_pct > 15:
+                                                reason = "(CREATOR)" if is_creator_top else "(INSIDER)" if top1_insider else "(WHALE)"
                                                 logger.warning(
-                                                    "Bundle detected — creator/insider holds too much",
+                                                    "Blocked — single holder too concentrated",
                                                     token=sig_data.token_name,
                                                     top1_pct=f"{top1_pct:.1f}%",
-                                                    is_creator=is_creator_top,
+                                                    reason=reason,
                                                 )
                                                 await send_telegram(
-                                                    f"Blocked — creator/insider bundled\n"
-                                                    f"Token: {sig_data.token_name} ({sig_data.ticker})\n"
-                                                    f"Top holder: {top1_pct:.1f}% {'(CREATOR)' if is_creator_top else '(INSIDER)'}",
+                                                    f"Blocked — single holder {top1_pct:.1f}% {reason}\n"
+                                                    f"Token: {sig_data.token_name} ({sig_data.ticker})",
                                                     settings,
                                                 )
                                                 continue
+
+                                            # Hard block: top5 holders > 40%
+                                            if top5_pct > 40:
+                                                logger.warning(
+                                                    "Blocked — top5 holders too concentrated",
+                                                    token=sig_data.token_name,
+                                                    top5_pct=f"{top5_pct:.1f}%",
+                                                )
+                                                await send_telegram(
+                                                    f"Blocked — top5 holders {top5_pct:.1f}%\n"
+                                                    f"Token: {sig_data.token_name} ({sig_data.ticker})",
+                                                    settings,
+                                                )
+                                                continue
+
                                             if insider_pct > 25:
                                                 logger.warning(
                                                     "Insider accumulation detected",
