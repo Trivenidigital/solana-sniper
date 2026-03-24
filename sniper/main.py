@@ -253,45 +253,8 @@ async def main() -> None:
                                     boost=boost,
                                 )
 
-                            # Direct tiered sizing based on conviction score
-                            buy_amount = _conviction_bet_size(conviction, settings)
-
-                            # Liquidity scaling — cap bet if token is illiquid
-                            # Only scale DOWN, never up
-                            if settings.LIQUIDITY_SIZING_ENABLED:
-                                liq = sig_data.liquidity_usd or 5000
-                                if liq < 20000:
-                                    size_ratio = max(0.5, liq / 20000)
-                                    buy_amount = round(buy_amount * size_ratio, 4)
-
-                            # Apply hard floor and ceiling
-                            buy_amount = max(settings.KELLY_MIN_BET, min(buy_amount, settings.KELLY_MAX_BET))
-
-                            logger.info(
-                                "Position sizing (conviction-tiered)",
-                                token=sig_data.token_name,
-                                conviction=f"{conviction:.1f}",
-                                buy_amount=f"{buy_amount:.4f} SOL",
-                                kelly_max=settings.KELLY_MAX_BET,
-                            )
-
-                            exposure = await db.get_total_exposure_sol()
-                            if exposure + buy_amount > settings.MAX_PORTFOLIO_SOL:
-                                logger.info("Max exposure reached", exposure=exposure)
-                                break
-
-                            if not settings.PAPER_MODE:
-                                max_available = cycle_balance - 0.01  # Reserve for gas
-                                if max_available < settings.KELLY_MIN_BET:
-                                    logger.warning("Insufficient SOL", balance=cycle_balance)
-                                    break
-                                if buy_amount > max_available:
-                                    logger.info("Capping buy to available balance",
-                                        original=f"{buy_amount:.4f}", capped=f"{max_available:.4f}")
-                                    buy_amount = max_available
-
                             # Pre-buy safety: real-time liquidity check via DexScreener
-                            # Reject if current liquidity is below MIN_LIQUIDITY_USD
+                            # Fetched BEFORE sizing so live_liq feeds into scaling
                             live_liq = 0.0
                             try:
                                 async with session.get(
@@ -324,6 +287,56 @@ async def main() -> None:
                                                 )
                             except Exception as e:
                                 logger.debug("DexScreener liquidity check failed, proceeding", error=str(e))
+
+                            # Direct tiered sizing based on conviction score
+                            buy_amount = _conviction_bet_size(conviction, settings)
+
+                            # Apply hard ceiling
+                            buy_amount = min(buy_amount, settings.KELLY_MAX_BET)
+
+                            # Liquidity scaling — uses live DexScreener liquidity
+                            # Only scales DOWN for thin liquidity tokens (<$20K)
+                            if settings.LIQUIDITY_SIZING_ENABLED and live_liq > 0:
+                                if live_liq < 20000:
+                                    size_ratio = live_liq / 20000
+                                    buy_amount = round(buy_amount * size_ratio, 4)
+                                    logger.info(
+                                        "Liquidity scaling applied",
+                                        token=sig_data.token_name,
+                                        liq=f"${live_liq:,.0f}",
+                                        size_ratio=f"{size_ratio:.2f}",
+                                        buy_amount=f"{buy_amount:.4f} SOL",
+                                    )
+
+                            # Apply floor — respect liquidity scaling for thin tokens
+                            if live_liq >= 10000 or live_liq == 0:
+                                buy_amount = max(settings.KELLY_MIN_BET, buy_amount)
+                            else:
+                                buy_amount = max(0.1, buy_amount)  # absolute minimum for gas
+
+                            logger.info(
+                                "Position sizing (conviction-tiered)",
+                                token=sig_data.token_name,
+                                conviction=f"{conviction:.1f}",
+                                buy_amount=f"{buy_amount:.4f} SOL",
+                                kelly_max=settings.KELLY_MAX_BET,
+                                live_liq=f"${live_liq:,.0f}",
+                            )
+
+                            exposure = await db.get_total_exposure_sol()
+                            if exposure + buy_amount > settings.MAX_PORTFOLIO_SOL:
+                                logger.info("Max exposure reached", exposure=exposure)
+                                break
+
+                            if not settings.PAPER_MODE:
+                                max_available = cycle_balance - 0.01  # Reserve for gas
+                                if max_available < settings.KELLY_MIN_BET:
+                                    logger.warning("Insufficient SOL", balance=cycle_balance)
+                                    break
+                                if buy_amount > max_available:
+                                    logger.info("Capping buy to available balance",
+                                        original=f"{buy_amount:.4f}", capped=f"{max_available:.4f}")
+                                    buy_amount = max_available
 
                             # Pre-buy safety: Rugcheck full report (single call for both
                             # summary + bundle check) → GoPlus (fallback) → fail-closed
