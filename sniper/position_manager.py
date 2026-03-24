@@ -703,6 +703,14 @@ async def _close_position(
         action = f"{reason.upper()}: {token_name} PnL={pnl_pct:.1f}% ({pnl_sol:+.4f} SOL)"
         logger.info(action, tx=tx_sig)
 
+        # Set cooldown for bad exits to prevent re-buying dumping tokens
+        if reason in ("stop_loss", "rug_detected", "unsellable"):
+            try:
+                await db.set_cooldown(contract_address, settings.COOLDOWN_HOURS)
+                logger.info("Cooldown set", token=token_name, hours=settings.COOLDOWN_HOURS)
+            except Exception as cd_err:
+                logger.warning("Failed to set cooldown", token=token_name, error=str(cd_err))
+
         # Telegram notification for position close
         await send_telegram(
             f"Position Closed ({reason.replace('_', ' ').title()})\n"
@@ -750,6 +758,11 @@ async def _close_position(
             except Exception as db_err:
                 logger.error("Failed to force-close in DB", token=token_name, error=str(db_err))
                 return f"FORCE_CLOSE_DB_FAILED: {token_name}"
+            # Set cooldown for unsellable token
+            try:
+                await db.set_cooldown(contract_address, settings.COOLDOWN_HOURS)
+            except Exception:
+                pass
             await send_telegram(
                 f"Position Force-Closed (unsellable)\n"
                 f"Token: {token_name}\n"

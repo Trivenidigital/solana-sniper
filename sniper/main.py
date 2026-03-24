@@ -197,6 +197,12 @@ async def main() -> None:
 
                         for sig_data in actionable:
                             safety_passed = False
+
+                            # Cooldown check — skip tokens recently exited via stop-loss/rug
+                            if await db.is_on_cooldown(sig_data.contract_address):
+                                logger.info("Token on cooldown — skipping", token=sig_data.token_name)
+                                continue
+
                             # Pre-trade checks
                             open_count = await db.count_open_positions()
                             if open_count >= settings.MAX_OPEN_POSITIONS:
@@ -571,6 +577,7 @@ async def main() -> None:
                                         f"Total Tokens: {total_tokens:.2f}",
                                         settings,
                                     )
+                                    cycle_balance -= buy_amount
 
                                 else:
                                     # Single wallet buy (with timeout)
@@ -638,6 +645,7 @@ async def main() -> None:
                                         f"TX: {tx_sig}",
                                         settings,
                                     )
+                                    cycle_balance -= buy_amount
 
                             except Exception as e:
                                 logger.error(
