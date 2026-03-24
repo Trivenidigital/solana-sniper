@@ -168,6 +168,12 @@ async def main() -> None:
         _dashboard_task(db, args.dashboard_interval, shutdown_event)
     )
 
+    # Start Telegram command bot
+    from sniper.telegram_bot import telegram_command_loop
+    tg_task = asyncio.create_task(
+        telegram_command_loop(settings, shutdown_event)
+    )
+
     # Start copy trader background task (score boost mode — not blind buying)
     copy_trade_task = None
     if settings.COPY_TRADE_ENABLED:
@@ -606,6 +612,7 @@ async def main() -> None:
                                         decimals=decimals,
                                         conviction_score=sig_data.conviction_score,
                                         entry_liquidity_usd=live_liq,
+                                        entry_mcap_usd=live_mcap,
                                     )
                                     pos_id = await db.open_position(pos)
                                     await db.log_trade(
