@@ -155,7 +155,7 @@ async def check_positions(
                 pass
 
             # If liquidity dropped 70%+ from entry → real rug
-            entry_liq = pos.entry_price_usd or 0
+            entry_liq = pos.entry_liquidity_usd or 0
             if liq_usd > 0 and entry_liq > 0:
                 liq_drop_pct = ((entry_liq - liq_usd) / entry_liq) * 100
                 if liq_drop_pct >= settings.CONVICTION_HOLD_RUG_LIQUIDITY_DROP_PCT:

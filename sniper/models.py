@@ -59,6 +59,7 @@ class Position(BaseModel):
     dca_completed: int = 0
     decimals: int | None = None
     conviction_score: float | None = None
+    entry_liquidity_usd: float = 0
 
 
 class JupiterQuote(BaseModel):
