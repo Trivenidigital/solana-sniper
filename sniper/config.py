@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     SNIPER_DB_PATH: Path = Path("sniper.db")
 
     # Risk controls
-    MAX_BUY_SOL: float = 2.0  # Aligned with KELLY_MAX_BET
+    MAX_BUY_SOL: float = 1.0  # Match Kelly max
     MAX_PORTFOLIO_SOL: float = 1.0
     MAX_OPEN_POSITIONS: int = 5
     STOP_LOSS_PCT: float = 35.0
@@ -112,8 +112,8 @@ class Settings(BaseSettings):
     KELLY_ENABLED: bool = True
     KELLY_LOOKBACK: int = 20       # Number of recent trades to analyze
     KELLY_MIN_TRADES: int = 5      # Minimum trades before Kelly activates
-    KELLY_MIN_BET: float = 0.05    # Floor (SOL)
-    KELLY_MAX_BET: float = 0.3     # Ceiling (SOL)
+    KELLY_MIN_BET: float = 0.3     # Floor (SOL)
+    KELLY_MAX_BET: float = 1.0     # Ceiling (SOL)
     KELLY_WIN_RATE_OVERRIDE: float = 0  # Manual override from GMGN (0 = use DB)
     KELLY_PAYOFF_OVERRIDE: float = 0   # Manual override for avg_win/avg_loss ratio (0 = use DB)
 
