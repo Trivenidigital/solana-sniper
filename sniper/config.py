@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     KELLY_ENABLED: bool = True
     KELLY_LOOKBACK: int = 20       # Number of recent trades to analyze
     KELLY_MIN_TRADES: int = 5      # Minimum trades before Kelly activates
-    KELLY_MIN_BET: float = 0.3     # Floor (SOL)
+    KELLY_MIN_BET: float = 0.25    # Floor (SOL)
     KELLY_MAX_BET: float = 1.0     # Ceiling (SOL)
     KELLY_WIN_RATE_OVERRIDE: float = 0  # Manual override from GMGN (0 = use DB)
     KELLY_PAYOFF_OVERRIDE: float = 0   # Manual override for avg_win/avg_loss ratio (0 = use DB)
