@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     BUY_TIMEOUT_SECONDS: int = 30
 
     # Hard quality gates
-    MAX_TOP3_CONCENTRATION: float = 0.50
+    MAX_TOP3_CONCENTRATION: float = 0.40
     MIN_HOLDER_COUNT: int = 5
 
     # Signal freshness
