@@ -191,10 +191,35 @@ async def execute_buy(
             logger.info("BUY executed", tx=tx_sig, token=contract_address, sol=sol_amount,
                         slippage_bps=slippage_bps, attempt=attempt + 1)
 
-            # Verify transaction in background — don't block the buy path
-            asyncio.create_task(
-                _verify_transaction(client, tx_sig, contract_address)
-            )
+            # Verify transaction on-chain — retry 3x with 2s gaps
+            await asyncio.sleep(2)
+            for verify_attempt in range(3):
+                try:
+                    tx_resp = await client.get_transaction(
+                        Signature.from_string(tx_sig),
+                        max_supported_transaction_version=0,
+                    )
+                    if tx_resp.value is None:
+                        if verify_attempt < 2:
+                            await asyncio.sleep(2)
+                            continue
+                        raise TransactionFailedError(
+                            f"Transaction not found on-chain after 3 attempts: {tx_sig}"
+                        )
+                    if tx_resp.value.transaction.meta.err:
+                        raise TransactionFailedError(
+                            f"Transaction failed on-chain: {tx_resp.value.transaction.meta.err} TX: {tx_sig}"
+                        )
+                    break  # TX confirmed and no error
+                except TransactionFailedError:
+                    raise
+                except Exception as verify_err:
+                    if verify_attempt < 2:
+                        await asyncio.sleep(2)
+                        continue
+                    raise TransactionFailedError(
+                        f"Could not verify transaction: {verify_err} TX: {tx_sig}"
+                    ) from verify_err
 
             return (tx_sig, tokens_received, decimals)
 
