@@ -271,6 +271,7 @@ async def main() -> None:
 
                             # Pre-buy safety: real-time liquidity check via DexScreener
                             # Reject if current liquidity is below MIN_LIQUIDITY_USD
+                            live_liq = 0.0
                             try:
                                 async with session.get(
                                     f"https://api.dexscreener.com/tokens/v1/solana/{sig_data.contract_address}",
@@ -543,6 +544,7 @@ async def main() -> None:
                                             paper=settings.PAPER_MODE,
                                             decimals=r.get("decimals"),
                                             conviction_score=sig_data.conviction_score,
+                                            entry_liquidity_usd=live_liq,
                                         )
                                         pos_id = await db.open_position(pos)
                                         await db.log_trade(
@@ -618,6 +620,7 @@ async def main() -> None:
                                         paper=settings.PAPER_MODE,
                                         decimals=decimals,
                                         conviction_score=sig_data.conviction_score,
+                                        entry_liquidity_usd=live_liq,
                                     )
                                     pos_id = await db.open_position(pos)
                                     await db.log_trade(
