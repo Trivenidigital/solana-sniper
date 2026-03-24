@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import logging
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -10,6 +12,12 @@ import aiohttp
 from aiohttp import web
 
 from sniper.config import Settings
+
+logger = logging.getLogger(__name__)
+
+# Rate limiting for trade endpoint
+_last_trade_time: float = 0.0
+_TRADE_RATE_LIMIT_SECONDS = 10.0
 
 JUPITER_QUOTE_URL = "https://lite-api.jup.ag/swap/v1/quote"
 SOL_MINT = "So11111111111111111111111111111111111111112"
@@ -547,14 +555,22 @@ async function executeTrade(side) {
 
   showStatus('Executing ' + side + '...', 'success');
 
+  let apiKey = sessionStorage.getItem('dashboard_api_key');
+  if (!apiKey) {
+    apiKey = prompt('Enter Dashboard API Key:');
+    if (!apiKey) { showStatus('API key required', 'error'); return; }
+    sessionStorage.setItem('dashboard_api_key', apiKey);
+  }
+
   try {
     const resp = await fetch('/api/trade', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json', 'X-API-Key': '{{ dashboard_api_key }}'},
+      headers: {'Content-Type': 'application/json', 'X-API-Key': apiKey},
       body: JSON.stringify({side, token, amount})
     });
     const data = await resp.json();
     if (data.error) {
+      if (resp.status === 401) { sessionStorage.removeItem('dashboard_api_key'); }
       showStatus('Error: ' + data.error, 'error');
     } else {
       showStatus('Success! TX: ' + (data.tx || 'done'), 'success');
@@ -681,7 +697,6 @@ async def handle_dashboard(request: web.Request) -> web.Response:
         win_rate=win_rate, winners=winners, total_closed=total_closed,
         sol_price=sol_price, sol_balance=sol_balance,
         wallet_pubkey=wallet_pubkey, scanner=scanner,
-        dashboard_api_key=settings.DASHBOARD_API_KEY or "",
         open_positions=open_positions, closed_positions=closed_positions,
         recent_trades=recent_trades, now=datetime.now(timezone.utc).isoformat(),
         net_pnl_usd=net_pnl_usd, today_pnl_usd=today_pnl_usd,
@@ -715,6 +730,15 @@ async def handle_api(request: web.Request) -> web.Response:
 
 async def handle_trade(request: web.Request) -> web.Response:
     """Handle manual buy/sell from the dashboard."""
+    global _last_trade_time
+
+    # I2: Only allow trade requests from localhost
+    peername = request.transport.get_extra_info("peername") if request.transport else None
+    remote_ip = peername[0] if peername else request.remote
+    if remote_ip not in ("127.0.0.1", "::1", "localhost"):
+        logger.warning("Trade attempt from non-local IP: %s", remote_ip)
+        return web.json_response({"error": "Trades only allowed from localhost"}, status=403)
+
     # Require API key for trade execution
     settings = _get_settings()
     if not settings.DASHBOARD_API_KEY:
@@ -722,7 +746,15 @@ async def handle_trade(request: web.Request) -> web.Response:
     import hmac
     api_key = request.headers.get("X-API-Key", "")
     if not hmac.compare_digest(api_key, settings.DASHBOARD_API_KEY):
+        logger.warning("Trade attempt with invalid API key from %s", remote_ip)
         return web.json_response({"error": "Unauthorized"}, status=401)
+
+    # I2: Rate limiting — max 1 trade per 10 seconds
+    now = time.monotonic()
+    if now - _last_trade_time < _TRADE_RATE_LIMIT_SECONDS:
+        remaining = _TRADE_RATE_LIMIT_SECONDS - (now - _last_trade_time)
+        return web.json_response({"error": f"Rate limited — wait {remaining:.0f}s"}, status=429)
+
     try:
         body = await request.json()
         side = body.get("side", "buy")
@@ -731,6 +763,10 @@ async def handle_trade(request: web.Request) -> web.Response:
 
         if not token or amount <= 0:
             return web.json_response({"error": "Invalid token or amount"}, status=400)
+
+        # I2: Log all trade attempts
+        logger.info("Trade attempt: side=%s token=%s amount=%s ip=%s", side, token, amount, remote_ip)
+        _last_trade_time = time.monotonic()
 
         from sniper.wallet import load_keypair
         from sniper.config import Settings
@@ -744,7 +780,7 @@ async def handle_trade(request: web.Request) -> web.Response:
 
         async with aiohttp.ClientSession() as session:
             if side == "buy":
-                tx_sig, tokens = await execute_buy(client, kp, session, token, amount, settings)
+                tx_sig, tokens, _decimals = await execute_buy(client, kp, session, token, amount, settings)
 
                 from sniper.db import Database
                 from sniper.models import Position
