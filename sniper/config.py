@@ -121,6 +121,15 @@ class Settings(BaseSettings):
     JITO_ENABLED: bool = False  # Enable for MEV-protected transactions
     JITO_TIP_LAMPORTS: int = 100000  # Tip amount (0.0001 SOL default)
 
+    # Conviction hold — patient exit logic for high-score tokens
+    CONVICTION_HOLD_ENABLED: bool = True
+    CONVICTION_HOLD_MIN_SCORE: float = 70.0
+    CONVICTION_HOLD_MAX_HOLD_MIN: float = 240  # 4 hours
+    CONVICTION_HOLD_TRAILING_ACTIVATE_PCT: float = 50.0
+    CONVICTION_HOLD_TRAILING_PCT: float = 20.0
+    CONVICTION_HOLD_RUG_LIQUIDITY_DROP_PCT: float = 70.0
+    CONVICTION_HOLD_HARD_STOP_PCT: float = 70.0
+
     # DCA on dip (risky — disabled by default)
     DCA_ENABLED: bool = False
 
