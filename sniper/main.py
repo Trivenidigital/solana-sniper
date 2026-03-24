@@ -227,12 +227,14 @@ async def main() -> None:
                                     boost=boost,
                                 )
                             # Conviction-tiered Kelly multiplier
-                            if conviction >= 60:
-                                conviction_factor = 2.0   # 25% of balance
-                            elif conviction >= 40:
-                                conviction_factor = 1.5   # 18.75% of balance
+                            if conviction >= 70:
+                                conviction_factor = 2.0   # conviction hold tokens
+                            elif conviction >= 60:
+                                conviction_factor = 1.5
+                            elif conviction >= 50:
+                                conviction_factor = 1.0   # base sizing
                             else:
-                                conviction_factor = 0.7   # 8.75% of balance
+                                conviction_factor = 0.0   # should never fire (threshold blocks)
                             kelly_bet_adj = kelly_bet * conviction_factor
 
                             if settings.LIQUIDITY_SIZING_ENABLED:
