@@ -5,7 +5,11 @@ and detects clusters of wallets funded from the same source (bundles).
 
 API: GET /api/db/token/{mint} returns { token, scans[] }
 Each scan has: bundle_pct, bundle_wallets, suspicious_clusters, holders_scanned.
+
+Requires auth token from POST /api/db/auth (24h session tokens).
 """
+
+import time
 
 import aiohttp
 import structlog
@@ -13,6 +17,35 @@ import structlog
 from sniper.config import Settings
 
 logger = structlog.get_logger()
+
+# Module-level token cache — reuse until near expiry
+_godmode_session: dict = {"token": None, "expires_at": 0.0}
+
+
+async def _get_godmode_token(
+    session: aiohttp.ClientSession, settings: Settings,
+) -> str | None:
+    """Get a GODMODE session token, reusing cached if still valid."""
+    now = time.monotonic()
+    if _godmode_session["token"] and now < _godmode_session["expires_at"]:
+        return _godmode_session["token"]
+
+    try:
+        async with session.post(
+            f"{settings.GODMODE_URL}/api/db/auth",
+            timeout=aiohttp.ClientTimeout(total=5),
+        ) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                token = data.get("token")
+                if token:
+                    # Cache for 23 hours (tokens last 24h)
+                    _godmode_session["token"] = token
+                    _godmode_session["expires_at"] = now + (23 * 3600)
+                    return token
+    except Exception as e:
+        logger.debug("GODMODE auth failed", error=str(e))
+    return None
 
 
 async def check_godmode_bundles(
@@ -43,8 +76,12 @@ async def check_godmode_bundles(
         url = f"{settings.GODMODE_URL}/api/db/token/{token_mint}"
 
         async with aiohttp.ClientSession() as session:
+            token = await _get_godmode_token(session, settings)
+            headers = {"x-auth-token": token} if token else {}
+
             async with session.get(
                 url,
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(total=8),
             ) as resp:
                 if resp.status != 200:
@@ -56,14 +93,11 @@ async def check_godmode_bundles(
         # Response: { token: {...} | null, scans: [...] }
         scans = data.get("scans", [])
         if not scans:
-            # No scan data for this token — treat as clean (no info)
             return result
 
-        # Use the most recent scan (first in list, ordered by scanned_at DESC)
         latest = scans[0]
         bundle_pct = float(latest.get("bundle_pct", 0) or 0)
         bundle_wallets = int(latest.get("bundle_wallets", 0) or 0)
-        suspicious_clusters = int(latest.get("suspicious_clusters", 0) or 0)
 
         result["bundle_pct"] = bundle_pct
         result["bundled_wallets"] = bundle_wallets
@@ -72,7 +106,6 @@ async def check_godmode_bundles(
         return result
 
     except Exception as e:
-        # Fail open — don't block buys if GODMODE is unreachable
         logger.debug("GODMODE check failed", error=str(e), token=token_mint)
         result["error"] = str(e)
         return result
@@ -89,9 +122,13 @@ async def trigger_godmode_scan(token_mint: str, settings: Settings) -> None:
     try:
         url = f"{settings.GODMODE_URL}/api/db/scan-token"
         async with aiohttp.ClientSession() as session:
+            token = await _get_godmode_token(session, settings)
+            headers = {"x-auth-token": token} if token else {}
+
             async with session.post(
                 url,
                 json={"mint": token_mint},
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(total=5),
             ) as resp:
                 if resp.status == 200:
