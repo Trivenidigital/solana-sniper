@@ -414,6 +414,7 @@ async def main() -> None:
                                             and h.get("address", "") not in KNOWN_PROGRAMS
                                             and h.get("owner", "") not in KNOWN_PROGRAMS
                                             and h.get("address", "") not in pair_addresses
+                                            and h.get("owner", "") not in pair_addresses
                                         ]
                                         if real_holders:
                                             creator = rc_full.get("creator", "")
