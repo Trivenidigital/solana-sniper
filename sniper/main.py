@@ -27,6 +27,32 @@ from sniper.wallet import get_sol_balance, load_keypair
 logger = structlog.get_logger()
 
 
+def _conviction_bet_size(conviction: float, settings: Settings) -> float:
+    """Return SOL bet size based on conviction score.
+
+    Tiered sizing: higher conviction = larger bet.
+    All values are proportional to KELLY_MAX_BET so the ceiling
+    can be adjusted in .env without changing the tiers.
+    """
+    max_bet = settings.KELLY_MAX_BET
+    if conviction >= 80:
+        return max_bet
+    elif conviction >= 75:
+        return round(max_bet * 0.90, 4)
+    elif conviction >= 70:
+        return round(max_bet * 0.75, 4)
+    elif conviction >= 65:
+        return round(max_bet * 0.60, 4)
+    elif conviction >= 60:
+        return round(max_bet * 0.50, 4)
+    elif conviction >= 55:
+        return round(max_bet * 0.40, 4)
+    elif conviction >= 50:
+        return round(max_bet * 0.30, 4)
+    else:
+        return settings.KELLY_MIN_BET
+
+
 async def _dashboard_task(db: Database, interval: int, shutdown: asyncio.Event) -> None:
     """Background task that prints dashboard periodically."""
     while not shutdown.is_set():
@@ -203,12 +229,10 @@ async def main() -> None:
                                 logger.info("Max positions reached", count=open_count)
                                 break
 
-                            # Position sizing: Kelly → liquidity adjustment
-                            bal = cycle_balance
-                            kelly_bet = await calculate_kelly_bet(db, bal, settings)
+                            # Conviction-based direct sizing
+                            conviction = sig_data.conviction_score or 0
 
-                            # Conviction-weighted sizing (boost if smart money detected)
-                            conviction = sig_data.conviction_score or 30
+                            # Smart money boost (adds to conviction score, not to bet size)
                             async with signals_lock:
                                 sm = smart_money_signals.get(sig_data.contract_address)
                             if sm is not None:
@@ -226,32 +250,27 @@ async def main() -> None:
                                     smart_wallets=wallet_count,
                                     boost=boost,
                                 )
-                            # Conviction-tiered Kelly multiplier
-                            if conviction >= 70:
-                                conviction_factor = 2.0   # conviction hold tokens
-                            elif conviction >= 60:
-                                conviction_factor = 1.5
-                            elif conviction >= 50:
-                                conviction_factor = 1.0   # base sizing
-                            else:
-                                conviction_factor = 0.0   # should never fire (threshold blocks)
-                            kelly_bet_adj = kelly_bet * conviction_factor
 
+                            # Direct tiered sizing based on conviction score
+                            buy_amount = _conviction_bet_size(conviction, settings)
+
+                            # Liquidity scaling — cap bet if token is illiquid
+                            # Only scale DOWN, never up
                             if settings.LIQUIDITY_SIZING_ENABLED:
                                 liq = sig_data.liquidity_usd or 5000
-                                size_ratio = min(1.0, liq / 20000)
-                                buy_amount = max(settings.KELLY_MIN_BET, kelly_bet_adj * size_ratio)
-                            else:
-                                buy_amount = kelly_bet_adj
+                                if liq < 20000:
+                                    size_ratio = max(0.5, liq / 20000)
+                                    buy_amount = round(buy_amount * size_ratio, 4)
 
-                            buy_amount = min(buy_amount, settings.KELLY_MAX_BET)
+                            # Apply hard floor and ceiling
+                            buy_amount = max(settings.KELLY_MIN_BET, min(buy_amount, settings.KELLY_MAX_BET))
+
                             logger.info(
-                                "Position sizing",
+                                "Position sizing (conviction-tiered)",
                                 token=sig_data.token_name,
-                                kelly_bet=f"{kelly_bet:.4f}",
-                                conviction=f"{conviction:.0f}",
-                                conviction_factor=f"{conviction_factor:.2f}",
-                                buy_amount=f"{buy_amount:.4f}",
+                                conviction=f"{conviction:.1f}",
+                                buy_amount=f"{buy_amount:.4f} SOL",
+                                kelly_max=settings.KELLY_MAX_BET,
                             )
 
                             exposure = await db.get_total_exposure_sol()
