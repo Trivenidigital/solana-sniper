@@ -350,6 +350,24 @@ async def check_positions(
                 actions.append(action)
                 continue
 
+        # --- Universal stop loss (runs every cycle, all phases) ---
+        if pnl_pct <= -settings.STOP_LOSS_PCT:
+            logger.warning(
+                "Stop loss triggered",
+                token=pos.token_name,
+                pnl_pct=f"{pnl_pct:.1f}%",
+                stop_loss=f"-{settings.STOP_LOSS_PCT}%",
+                age_minutes=f"{age_minutes:.1f}",
+            )
+            action = await _close_position(
+                db, client, keypair, session, settings,
+                pos.id, pos.contract_address, pos.token_name,
+                int(pos.entry_token_amount), pos.entry_sol,
+                current_value, pnl_pct, "stop_loss",
+            )
+            actions.append(action)
+            continue
+
         # --- Phase-based exit logic ---
 
         # Phase 1: Protection (0-{protection_end} min)
