@@ -260,92 +260,99 @@ async def check_positions(
         momentum_end = settings.MOMENTUM_CHECK_MIN
         max_hold = settings.MAX_HOLD_MIN
 
-        # --- Profit-taking ladder (only when trailing is NOT active) ---
-        if not pos.trailing_active:
-            # Rung 1: sell 25% at +50%
-            if (settings.PROFIT_LADDER_ENABLED
-                    and pnl_pct >= settings.PROFIT_LADDER_PCT
-                    and pos.partial_exit_tier < 1
-                    and pos.id is not None):
-                await _partial_sell(
-                    db, client, keypair, session, settings,
-                    pos, 0.25, pnl_pct, actions, tier=1,
-                )
-                continue  # Re-evaluate next cycle
-            # Rung 2: sell another 25% at +100%
-            if (settings.PROFIT_LADDER_ENABLED
-                    and pnl_pct >= 100
-                    and pos.partial_exit_tier < 2
-                    and pos.id is not None):
-                await _partial_sell(
-                    db, client, keypair, session, settings,
-                    pos, 0.33, pnl_pct, actions, tier=2,  # 33% of remaining = 25% of original
-                )
-                continue
+        # --- Track peak value (always, for all phases) ---
+        if pos.id is not None and current_value > (pos.peak_value_sol or 0):
+            pos.peak_value_sol = current_value
+            await db.update_peak_value(pos.id, current_value)
 
-        # --- Trailing stop management (runs BEFORE phase checks) ---
-        if pos.trailing_active and pos.id is not None:
-            # Update peak value
-            if current_value > (pos.peak_value_sol or 0):
-                pos.peak_value_sol = current_value
-                await db.update_peak_value(pos.id, current_value)
+        # --- Profit ladder + breakeven stop ---
+        # Step 1: Sell 25% at +25%, move stop to breakeven
+        if (pnl_pct >= 25
+                and pos.partial_exit_tier < 1
+                and pos.id is not None):
+            await _partial_sell(
+                db, client, keypair, session, settings,
+                pos, 0.25, pnl_pct, actions, tier=1,
+            )
+            logger.info(
+                "Ladder step 1: sold 25%, stop moved to breakeven",
+                token=pos.token_name,
+                pnl_pct=f"{pnl_pct:.1f}%",
+            )
+            continue
 
-            if pos.peak_value_sol is not None and pos.peak_value_sol > 0:
-                peak_pnl = ((pos.peak_value_sol - pos.entry_sol) / pos.entry_sol) * 100
-                drop_from_peak = ((pos.peak_value_sol - current_value) / pos.peak_value_sol) * 100
+        # Step 2: Sell 25% more at +50%, activate trailing at 25% from peak
+        if (pnl_pct >= 50
+                and pos.partial_exit_tier < 2
+                and pos.id is not None):
+            await _partial_sell(
+                db, client, keypair, session, settings,
+                pos, 0.33, pnl_pct, actions, tier=2,  # 33% of remaining = 25% of original
+            )
+            if not pos.trailing_active:
+                pos.trailing_active = True
+                await db.set_trailing_active(pos.id)
+            logger.info(
+                "Ladder step 2: sold 25% more, trailing active at 25%",
+                token=pos.token_name,
+                pnl_pct=f"{pnl_pct:.1f}%",
+            )
+            continue
 
-                # Determine trail percentage based on peak gain tier
-                if peak_pnl > 200:
-                    trail_pct = settings.TRAILING_TIER3_PCT  # 10%
-                    # Tier 2 partial sell: 50% of remaining (25% of original) if tier < 2
-                    if pos.partial_exit_tier < 2:
-                        await _partial_sell(
-                            db, client, keypair, session, settings,
-                            pos, 0.50, pnl_pct, actions, tier=2,
-                        )
-                elif peak_pnl > 100:
-                    trail_pct = settings.TRAILING_TIER2_PCT  # 15%
-                    # Tier 1 partial sell: 50% if tier < 1
-                    if pos.partial_exit_tier < 1:
-                        await _partial_sell(
-                            db, client, keypair, session, settings,
-                            pos, 0.50, pnl_pct, actions, tier=1,
-                        )
-                else:
-                    trail_pct = settings.TRAILING_TIER1_PCT  # 20%
+        # Step 3: Sell 25% more at +100%, tighten trail to 15%
+        if (pnl_pct >= 100
+                and pos.partial_exit_tier < 3
+                and pos.id is not None):
+            await _partial_sell(
+                db, client, keypair, session, settings,
+                pos, 0.50, pnl_pct, actions, tier=3,  # 50% of remaining = 25% of original
+            )
+            logger.info(
+                "Ladder step 3: sold 25% more, trail tightened to 15%",
+                token=pos.token_name,
+                pnl_pct=f"{pnl_pct:.1f}%",
+            )
+            continue
 
-                logger.debug(
-                    "Trailing check",
-                    token=pos.token_name,
-                    peak_pnl=f"{peak_pnl:.1f}%",
-                    drop_from_peak=f"{drop_from_peak:.1f}%",
-                    trail_pct=f"{trail_pct}%",
-                )
+        # --- Breakeven stop: after first partial sell, never lose money ---
+        # Use 1% instead of 0% to cover gas/slippage fees
+        if pos.partial_exit_tier >= 1 and pnl_pct <= 1 and pos.id is not None:
+            logger.info(
+                "Breakeven stop — locked profit from ladder step 1",
+                token=pos.token_name,
+                pnl_pct=f"{pnl_pct:.1f}%",
+                tier=pos.partial_exit_tier,
+            )
+            action = await _close_position(
+                db, client, keypair, session, settings,
+                pos.id, pos.contract_address, pos.token_name,
+                int(pos.entry_token_amount), pos.entry_sol,
+                current_value, pnl_pct, "breakeven_stop",
+            )
+            actions.append(action)
+            continue
 
-                if drop_from_peak >= trail_pct:
-                    action = await _close_position(
-                        db, client, keypair, session, settings,
-                        pos.id, pos.contract_address, pos.token_name,
-                        int(pos.entry_token_amount), pos.entry_sol,
-                        current_value, pnl_pct, "trailing_stop",
-                    )
-                    actions.append(action)
-                    continue
+        # --- Trailing stop (active after ladder step 2+) ---
+        if pos.trailing_active and pos.peak_value_sol and pos.peak_value_sol > 0 and pos.id is not None:
+            drop_from_peak = ((pos.peak_value_sol - current_value) / pos.peak_value_sol) * 100
+            # Tighter trail after step 3 (moon bag)
+            trail_pct = 15.0 if pos.partial_exit_tier >= 3 else 25.0
 
-        # --- Break-even stop: once we've been up 30%+, never let it go negative ---
-        if pos.peak_value_sol and pos.peak_value_sol > pos.entry_sol * 1.3:
-            if pnl_pct < 0 and pos.id is not None:
-                logger.info(
-                    "Break-even stop triggered",
-                    token=pos.token_name,
-                    pnl_pct=f"{pnl_pct:.1f}%",
-                    peak_value=f"{pos.peak_value_sol:.4f}",
-                )
+            logger.debug(
+                "Trailing check",
+                token=pos.token_name,
+                pnl_pct=f"{pnl_pct:.1f}%",
+                drop_from_peak=f"{drop_from_peak:.1f}%",
+                trail_pct=f"{trail_pct}%",
+                tier=pos.partial_exit_tier,
+            )
+
+            if drop_from_peak >= trail_pct:
                 action = await _close_position(
                     db, client, keypair, session, settings,
                     pos.id, pos.contract_address, pos.token_name,
                     int(pos.entry_token_amount), pos.entry_sol,
-                    current_value, pnl_pct, "breakeven_stop",
+                    current_value, pnl_pct, "trailing_stop",
                 )
                 actions.append(action)
                 continue
