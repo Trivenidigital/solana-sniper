@@ -481,14 +481,17 @@ async def check_positions(
                 await db.update_peak_value(pos.id, current_value)
 
             # Check drop from peak (not from entry)
+            # Only trigger if token actually pumped first (peak >= 10% above entry)
             if pos.peak_value_sol and pos.peak_value_sol > 0:
+                peak_gain_pct = ((pos.peak_value_sol - pos.entry_sol) / pos.entry_sol) * 100
                 drop_from_peak = ((pos.peak_value_sol - current_value) / pos.peak_value_sol) * 100
-                if drop_from_peak >= settings.MOMENTUM_LOSS_PCT:
+                if drop_from_peak >= settings.MOMENTUM_LOSS_PCT and peak_gain_pct >= 10:
                     logger.info(
                         "Momentum lost — dropped from peak in phase 2",
                         token=pos.token_name,
                         pnl_pct=f"{pnl_pct:.1f}%",
                         drop_from_peak=f"{drop_from_peak:.1f}%",
+                        peak_gain=f"{peak_gain_pct:.1f}%",
                         peak=f"{pos.peak_value_sol:.4f}",
                         age_minutes=f"{age_minutes:.1f}",
                     )
