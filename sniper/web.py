@@ -333,7 +333,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="table-wrap">
   <table>
     <tr>
-      <th>Token</th><th>Entry</th><th>Current Value</th><th>PnL</th><th>Opened</th><th>Trail</th><th>Mode</th>
+      <th>Token</th><th>Entry</th><th>Current Value</th><th>PnL</th><th>Opened</th><th>Trail</th><th>Mode</th><th>Action</th>
     </tr>
     {% for p in open_positions %}
     <tr>
@@ -360,6 +360,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <td>{{ p.opened_at[:16] }}</td>
       <td>{{ "Active" if p.trailing_active else "—" }}</td>
       <td><span class="tag {{ 'tag-paper' if p.paper else 'tag-live' }}">{{ "PAPER" if p.paper else "LIVE" }}</span></td>
+      <td>
+        <button
+            onclick="closePosition('{{ p.contract_address }}', '{{ p.token_name }}', {{ p.entry_token_amount }})"
+            class="close-btn"
+            style="background:#ff4444;color:white;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px;">
+            Close
+        </button>
+      </td>
     </tr>
     {% endfor %}
   </table>
@@ -581,6 +589,37 @@ async function executeTrade(side) {
   }
 }
 
+async function closePosition(contractAddress, tokenName, tokenAmount) {
+  if (!confirm('Close position for ' + tokenName + '?')) return;
+
+  let apiKey = sessionStorage.getItem('dashboard_api_key');
+  if (!apiKey) {
+    apiKey = prompt('Enter Dashboard API Key:');
+    if (!apiKey) { showStatus('API key required', 'error'); return; }
+    sessionStorage.setItem('dashboard_api_key', apiKey);
+  }
+
+  showStatus('Closing ' + tokenName + '...', 'success');
+
+  try {
+    const resp = await fetch('/api/trade', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+      body: JSON.stringify({ side: 'sell', token: contractAddress, amount: tokenAmount })
+    });
+    const data = await resp.json();
+    if (data.error) {
+      if (resp.status === 401) { sessionStorage.removeItem('dashboard_api_key'); }
+      showStatus('Error: ' + data.error, 'error');
+    } else {
+      showStatus(tokenName + ' closed! TX: ' + (data.tx || 'done'), 'success');
+      setTimeout(() => location.reload(), 2000);
+    }
+  } catch(e) {
+    showStatus('Request failed: ' + e.message, 'error');
+  }
+}
+
 function showStatus(msg, type) {
   const el = document.getElementById('trade-status');
   el.textContent = msg;
@@ -663,8 +702,9 @@ async def handle_dashboard(request: web.Request) -> web.Response:
     equity_data = []
     cumulative = 0
     for row in equity_rows:
-        cumulative += row["hourly_pnl"]
-        equity_data.append({"hour": row["hour_bucket"][-5:], "cumulative": round(cumulative, 4), "hourly": round(row["hourly_pnl"], 4)})
+        hourly_pnl = row["hourly_pnl"] or 0
+        cumulative += hourly_pnl
+        equity_data.append({"hour": row["hour_bucket"][-5:], "cumulative": round(cumulative, 4), "hourly": round(hourly_pnl, 4)})
 
     # Exit reason breakdown (all-time)
     exit_reasons = _query(
