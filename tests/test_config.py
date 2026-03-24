@@ -15,7 +15,7 @@ def test_settings_defaults():
     assert s.MAX_BUY_SOL == 0.1
     assert s.MAX_PORTFOLIO_SOL == 1.0
     assert s.MAX_OPEN_POSITIONS == 5
-    assert s.STOP_LOSS_PCT == 25.0
+    assert s.STOP_LOSS_PCT == 35.0
     assert s.TAKE_PROFIT_PCT == 100.0
     assert s.SLIPPAGE_BPS == 300
     assert s.SOLANA_RPC_URL == "https://api.mainnet-beta.solana.com"

@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     MAX_BUY_SOL: float = 2.0  # Aligned with KELLY_MAX_BET
     MAX_PORTFOLIO_SOL: float = 1.0
     MAX_OPEN_POSITIONS: int = 5
-    STOP_LOSS_PCT: float = 25.0
+    STOP_LOSS_PCT: float = 35.0
     TAKE_PROFIT_PCT: float = 100.0
     MIN_CONVICTION_SCORE: float = 70.0
     MIN_LIQUIDITY_USD: float = 15000.0
