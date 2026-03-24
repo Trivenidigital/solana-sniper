@@ -197,12 +197,6 @@ async def main() -> None:
 
                         for sig_data in actionable:
                             safety_passed = False
-
-                            # Cooldown check — skip tokens recently exited via stop-loss/rug
-                            if await db.is_on_cooldown(sig_data.contract_address):
-                                logger.info("Token on cooldown — skipping", token=sig_data.token_name)
-                                continue
-
                             # Pre-trade checks
                             open_count = await db.count_open_positions()
                             if open_count >= settings.MAX_OPEN_POSITIONS:
