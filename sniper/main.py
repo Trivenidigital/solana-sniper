@@ -256,6 +256,7 @@ async def main() -> None:
                             # Pre-buy safety: real-time liquidity check via DexScreener
                             # Fetched BEFORE sizing so live_liq feeds into scaling
                             live_liq = 0.0
+                            pair_addresses: set[str] = set()
                             try:
                                 async with session.get(
                                     f"https://api.dexscreener.com/tokens/v1/solana/{sig_data.contract_address}",
@@ -264,6 +265,11 @@ async def main() -> None:
                                     if dex_resp.status == 200:
                                         dex_data = await dex_resp.json()
                                         if isinstance(dex_data, list) and dex_data:
+                                            # Collect all pair addresses for LP pool detection
+                                            for pair in dex_data:
+                                                pa = pair.get("pairAddress", "")
+                                                if pa:
+                                                    pair_addresses.add(pa)
                                             liq_obj = dex_data[0].get("liquidity")
                                             if liq_obj and isinstance(liq_obj, dict):
                                                 live_liq = float(liq_obj.get("usd", 0) or 0)
@@ -345,17 +351,22 @@ async def main() -> None:
                             # Pre-buy safety: Rugcheck full report (single call for both
                             # summary + bundle check) → GoPlus (fallback) → fail-closed
                             # Known DEX/LP program addresses to exclude from holder checks
+                            # Known DEX/LP program addresses to exclude from holder checks
+                            # Check both address AND owner — LP pools have unique addresses
+                            # per token but share the same owner program
                             KNOWN_PROGRAMS = {
                                 "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",  # Raydium LP
                                 "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # Raydium V4
                                 "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",  # Raydium CPMM
-                                "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",   # Orca
-                                "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",   # Meteora
+                                "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",   # Orca Whirlpool
+                                "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",   # Meteora DLMM
                                 "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",    # Raydium LP V2
                                 "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",   # Pump.fun bonding curve
                                 "39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg",  # Pump.fun fee account
+                                "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",   # PumpSwap AMM
                                 "So11111111111111111111111111111111111111112",      # Wrapped SOL
                                 "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",    # Token program
+                                "11111111111111111111111111111111",                 # System Program (burned)
                             }
                             try:
                                 async with session.get(
@@ -401,6 +412,8 @@ async def main() -> None:
                                             h for h in top_holders
                                             if isinstance(h, dict)
                                             and h.get("address", "") not in KNOWN_PROGRAMS
+                                            and h.get("owner", "") not in KNOWN_PROGRAMS
+                                            and h.get("address", "") not in pair_addresses
                                         ]
                                         if real_holders:
                                             creator = rc_full.get("creator", "")
