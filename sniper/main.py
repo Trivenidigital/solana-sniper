@@ -571,6 +571,7 @@ async def main() -> None:
                                         f"Total Tokens: {total_tokens:.2f}",
                                         settings,
                                     )
+                                    cycle_balance -= buy_amount
 
                                 else:
                                     # Single wallet buy (with timeout)
@@ -638,6 +639,7 @@ async def main() -> None:
                                         f"TX: {tx_sig}",
                                         settings,
                                     )
+                                    cycle_balance -= buy_amount
 
                             except Exception as e:
                                 logger.error(
