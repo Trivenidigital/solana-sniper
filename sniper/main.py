@@ -412,9 +412,8 @@ async def main() -> None:
                                             is_creator_top = top1_addr == creator
                                             top1_insider = real_holders[0].get("isInsider", False)
 
-                                            # Hard block: any single wallet > 25%
-                                            # (Pump.fun LP pools hold ~20% each — don't block those)
-                                            if top1_pct > 25:
+                                            # Hard block: any single wallet > 15%
+                                            if top1_pct > 15:
                                                 reason = "(CREATOR)" if is_creator_top else "(INSIDER)" if top1_insider else "(WHALE)"
                                                 logger.warning(
                                                     "Blocked — single holder too concentrated",
@@ -429,9 +428,8 @@ async def main() -> None:
                                                 )
                                                 continue
 
-                                            # Hard block: top5 holders > 50%
-                                            # (Two LP pools at ~20% each = 40% baseline on Pump.fun)
-                                            if top5_pct > 50:
+                                            # Hard block: top5 holders > 40%
+                                            if top5_pct > 40:
                                                 logger.warning(
                                                     "Blocked — top5 holders too concentrated",
                                                     token=sig_data.token_name,
