@@ -448,7 +448,7 @@ async def check_positions(
                 )
                 actions.append(action)
                 continue
-            elif pnl_pct <= -35:
+            elif pnl_pct <= -settings.STOP_LOSS_PCT:
                 # Soft stop-loss in protection phase — not a rug but too much loss
                 logger.warning(
                     "Soft stop-loss in protection phase",
