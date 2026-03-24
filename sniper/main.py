@@ -49,6 +49,8 @@ def _conviction_bet_size(conviction: float, settings: Settings) -> float:
         return round(max_bet * 0.40, 4)
     elif conviction >= 50:
         return round(max_bet * 0.30, 4)
+    elif conviction >= 45:
+        return round(max_bet * 0.25, 4)
     else:
         return settings.KELLY_MIN_BET
 
