@@ -520,27 +520,19 @@ async def check_positions(
                         except Exception as e:
                             logger.warning("DCA buy failed", token=pos.token_name, error=str(e))
 
-        # Phase 3: Pump window ({momentum_end}-{max_hold} min)
+        # Phase 3: Hold window ({momentum_end}-{max_hold} min)
+        # No pump_window_expired exit — meme coins need time to build momentum.
+        # 大胖 (-23% at 60min → +298%), Nintendo (-0.6% → +396%), Hamburger (-1.7% → +185%)
+        # all pumped AFTER the old pump window would have exited them.
+        # Let stop loss, trailing stop, and max hold handle exits.
         elif age_minutes <= max_hold:
-            if not pos.trailing_active and pnl_pct < settings.PUMP_WINDOW_MIN_GAIN_PCT:
-                logger.info(
-                    "Pump window expired in phase 3",
-                    token=pos.token_name,
-                    pnl_pct=f"{pnl_pct:.1f}%",
-                    age_minutes=f"{age_minutes:.1f}",
-                    required_gain=f"{settings.PUMP_WINDOW_MIN_GAIN_PCT}%",
-                )
-                action = await _close_position(
-                    db, client, keypair, session, settings,
-                    pos.id, pos.contract_address, pos.token_name,
-                    int(pos.entry_token_amount), pos.entry_sol,
-                    current_value, pnl_pct, "pump_window_expired",
-                )
-                # Cooldown removed — trust conviction score for re-entry
-                actions.append(action)
-                continue
+            # Track peak value
+            if current_value > (pos.peak_value_sol or 0) and pos.id is not None:
+                pos.peak_value_sol = current_value
+                await db.update_peak_value(pos.id, current_value)
+
             # Activate trailing if gain is sufficient and not already active
-            elif pnl_pct >= settings.TRAILING_ACTIVATE_PCT and not pos.trailing_active and pos.id is not None:
+            if pnl_pct >= settings.TRAILING_ACTIVATE_PCT and not pos.trailing_active and pos.id is not None:
                 pos.trailing_active = True
                 await db.set_trailing_active(pos.id)
                 if pos.peak_value_sol is None or current_value > pos.peak_value_sol:
