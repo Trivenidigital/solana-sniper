@@ -11,11 +11,33 @@ from solders.keypair import Keypair
 from sniper.config import Settings
 from sniper.db import Database
 from sniper.executor import execute_buy, execute_sell
+from sniper.jupiter import SOL_MINT, LAMPORTS_PER_SOL, get_quote
 from sniper.telegram_notify import send_telegram
 
 logger = structlog.get_logger()
 
 
+async def _jupiter_value_sol(
+    session: aiohttp.ClientSession,
+    contract_address: str,
+    token_amount: int,
+    settings: Settings,
+) -> float | None:
+    """Get SOL value of a token position using Jupiter ONLY (no DexScreener).
+
+    Used specifically for rug-detection verification so we get an independent
+    price source that doesn't share DexScreener's stale data.
+    """
+    if token_amount <= 0:
+        return 0.0
+    try:
+        quote = await get_quote(
+            session, contract_address, SOL_MINT, token_amount, settings,
+        )
+        return float(quote.out_amount) / LAMPORTS_PER_SOL
+    except Exception:
+        logger.warning("Jupiter-only price check failed", token=contract_address)
+        return None
 
 
 async def _fetch_position_data(
@@ -353,9 +375,9 @@ async def check_positions(
                         # also confirms a significant price drop. Rugcheck returns
                         # false "LP Unlocked" for pumpswap tokens.
                         if risk_score >= 10000 or any("rug" in r.lower() for r in risk_names):
-                            # Verify with Jupiter before acting — Rugcheck can be wrong
-                            from sniper.executor import get_current_value_sol
-                            jupiter_value = await get_current_value_sol(
+                            # Verify with Jupiter directly — NOT get_current_value_sol
+                            # which tries DexScreener first (same stale data as rug trigger)
+                            jupiter_value = await _jupiter_value_sol(
                                 session, pos.contract_address,
                                 int(pos.entry_token_amount), settings,
                             )
@@ -384,8 +406,9 @@ async def check_positions(
 
             # Check 2: Verify actual price via Jupiter (not DexScreener)
             if not is_rug and pnl_pct <= -settings.RUG_DETECT_PCT:
-                from sniper.executor import get_current_value_sol
-                jupiter_value = await get_current_value_sol(
+                # Verify with Jupiter directly — NOT get_current_value_sol
+                # which tries DexScreener first (same stale data as rug trigger)
+                jupiter_value = await _jupiter_value_sol(
                     session, pos.contract_address, int(pos.entry_token_amount), settings,
                 )
                 if jupiter_value is not None:
