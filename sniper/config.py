@@ -41,10 +41,10 @@ class Settings(BaseSettings):
     MIN_LIQUIDITY_USD: float = 15000.0
     MAX_TOKEN_AGE_DAYS: int = 3
 
-    # Cooldown
+    # Dead code: cooldown not enforced, conviction score gates re-entry
     COOLDOWN_HOURS: int = 6
 
-    # Trailing take-profit (legacy — kept for backwards compat)
+    # Legacy: replaced by tiered trailing (TRAILING_TIER1/2/3_PCT)
     TRAILING_TRIGGER_PCT: float = 50.0
     TRAILING_STOP_PCT: float = 20.0
 
@@ -130,7 +130,7 @@ class Settings(BaseSettings):
     CONVICTION_HOLD_RUG_LIQUIDITY_DROP_PCT: float = 70.0
     CONVICTION_HOLD_HARD_STOP_PCT: float = 70.0
 
-    # DCA on dip (risky — disabled by default)
+    # Dead code: DCA disabled per user rule (no pyramiding on meme coins)
     DCA_ENABLED: bool = False
 
     # Smart money / copy trading
