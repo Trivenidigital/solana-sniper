@@ -21,6 +21,7 @@ from sniper.position_manager import check_positions, portfolio_summary
 from sniper.godmode import check_godmode_bundles
 from sniper.safety import check_token_safety  # GoPlus — fallback when Rugcheck is down
 from sniper.signal_reader import filter_actionable, read_new_signals
+from sniper.telegram_bot import is_paused
 from sniper.telegram_notify import send_telegram
 from sniper.wallet import get_sol_balance, load_keypair
 
@@ -204,7 +205,11 @@ async def main() -> None:
                     # --- Signal check phase ---
                     await prune_stale_signals(max_age_minutes=max(60, settings.BACKFILL_MAX_MINUTES))
                     elapsed = (now - last_signal_check).total_seconds()
-                    if elapsed >= settings.POLL_INTERVAL_SECONDS:
+                    if is_paused():
+                        if elapsed >= settings.POLL_INTERVAL_SECONDS:
+                            last_signal_check = now  # Don't pile up stale signals
+                            logger.debug("Trading paused via /pause command")
+                    elif elapsed >= settings.POLL_INTERVAL_SECONDS:
                         signals = await read_new_signals(
                             settings.SCOUT_DB_PATH,
                             last_signal_check,

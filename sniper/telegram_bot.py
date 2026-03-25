@@ -22,6 +22,7 @@ from sniper.config import Settings
 logger = structlog.get_logger()
 
 _last_update_id = 0
+_PAUSE_FILE = "/tmp/sniper_paused"
 
 
 async def _send(session: aiohttp.ClientSession, settings: Settings, text: str) -> None:
@@ -216,11 +217,84 @@ async def _handle_balance(settings: Settings) -> str:
         return f"Error: {e}"
 
 
+async def _handle_pause(session: aiohttp.ClientSession, settings: Settings) -> str:
+    """Handle /pause command — stop buying new tokens."""
+    import os
+    with open(_PAUSE_FILE, "w") as f:
+        f.write(datetime.now(timezone.utc).isoformat())
+    return "⏸ <b>PAUSED</b> — bot will NOT buy new tokens.\nExisting positions still managed.\nSend /resume to restart buying."
+
+
+async def _handle_resume(session: aiohttp.ClientSession, settings: Settings) -> str:
+    """Handle /resume command — resume buying."""
+    import os
+    try:
+        os.remove(_PAUSE_FILE)
+    except FileNotFoundError:
+        pass
+    return "▶️ <b>RESUMED</b> — bot is buying again."
+
+
+async def _handle_closeall(session: aiohttp.ClientSession, settings: Settings) -> str:
+    """Handle /closeall command — emergency liquidate all positions."""
+    import aiosqlite
+    from sniper.executor import execute_sell
+    from solders.keypair import Keypair
+    from solana.rpc.async_api import AsyncClient
+
+    try:
+        async with aiosqlite.connect(str(settings.SNIPER_DB_PATH)) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM positions WHERE status='open'")
+            positions = [dict(r) for r in await cursor.fetchall()]
+
+            if not positions:
+                return "No open positions to close."
+
+            kp = Keypair.from_json(open(settings.KEYPAIR_PATH).read())
+            client = AsyncClient(settings.SOLANA_RPC_URL)
+            results = []
+
+            for pos in positions:
+                try:
+                    tx_sig, sol_received = await execute_sell(
+                        client, kp, session, pos["contract_address"],
+                        int(pos["entry_token_amount"]), settings,
+                    )
+                    pnl_sol = sol_received - pos["entry_sol"]
+                    pnl_pct = (pnl_sol / pos["entry_sol"] * 100) if pos["entry_sol"] > 0 else 0
+                    now = datetime.now(timezone.utc).isoformat()
+                    await db.execute(
+                        """UPDATE positions SET exit_sol=?, exit_reason='emergency_closeall',
+                           status='closed', pnl_sol=?, pnl_pct=?, closed_at=? WHERE id=?""",
+                        (sol_received, pnl_sol, pnl_pct, now, pos["id"]),
+                    )
+                    results.append(f"✅ {pos['token_name']}: {pnl_sol:+.4f} SOL ({pnl_pct:+.1f}%)")
+                except Exception as e:
+                    results.append(f"❌ {pos['token_name']}: {e}")
+
+            await db.commit()
+            await client.close()
+
+            return f"<b>EMERGENCY CLOSE ALL</b>\n\n" + "\n".join(results)
+    except Exception as e:
+        return f"Close all failed: {e}"
+
+
+def is_paused() -> bool:
+    """Check if trading is paused. Called from main.py buy loop."""
+    import os
+    return os.path.exists(_PAUSE_FILE)
+
+
 HELP_TEXT = """<b>Sniper Bot Commands</b>
 
 /status — open positions, PnL, balance
 /positions — detailed open positions
 /close &lt;name&gt; — close position (e.g. /close wojak)
+/closeall — emergency liquidate ALL positions
+/pause — stop buying (positions still managed)
+/resume — resume buying
 /balance — wallet balance
 /help — this message"""
 
@@ -262,6 +336,12 @@ async def telegram_command_loop(settings: Settings, shutdown: asyncio.Event) -> 
                         reply = await _handle_positions(settings)
                     elif cmd == "/close":
                         reply = await _handle_close(arg, session, settings)
+                    elif cmd == "/closeall":
+                        reply = await _handle_closeall(session, settings)
+                    elif cmd == "/pause":
+                        reply = await _handle_pause(session, settings)
+                    elif cmd == "/resume":
+                        reply = await _handle_resume(session, settings)
                     elif cmd == "/balance":
                         reply = await _handle_balance(settings)
                     elif cmd == "/help" or cmd == "/start":
