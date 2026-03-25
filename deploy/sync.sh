@@ -6,20 +6,20 @@ set -euo pipefail
 
 VPS="${1:-root@149.28.125.16}"
 
-echo "Checkpointing WAL files before stop (prevents DB corruption)..."
+echo "Stopping ALL services first..."
+ssh "$VPS" "
+  systemctl stop coinpump-scout solana-sniper sniper-dashboard wojak-swinger 2>/dev/null
+  sleep 3
+  echo 'All services stopped'
+"
+
+echo "Checkpointing and cleaning WAL files..."
 ssh "$VPS" "
   sqlite3 /opt/scout/scout.db 'PRAGMA wal_checkpoint(TRUNCATE);' 2>/dev/null || true
   sqlite3 /opt/sniper/sniper.db 'PRAGMA wal_checkpoint(TRUNCATE);' 2>/dev/null || true
-  echo 'WAL checkpointed'
-"
-
-echo "Stopping services for clean deploy..."
-ssh "$VPS" "
-  systemctl stop coinpump-scout solana-sniper sniper-dashboard 2>/dev/null
-  sleep 2
   rm -f /opt/scout/scout.db-wal /opt/scout/scout.db-shm 2>/dev/null
   rm -f /opt/sniper/sniper.db-wal /opt/sniper/sniper.db-shm 2>/dev/null
-  echo 'Services stopped, WAL cleaned'
+  echo 'WAL cleaned'
 "
 
 echo "Syncing scout code..."
@@ -81,7 +81,7 @@ MIGRATIONS
 
 echo "Restarting services..."
 ssh "$VPS" "
-  systemctl restart coinpump-scout solana-sniper sniper-dashboard 2>/dev/null
+  systemctl restart coinpump-scout solana-sniper sniper-dashboard wojak-swinger 2>/dev/null
   sleep 5
   echo 'Scout:' \$(systemctl is-active coinpump-scout)
   echo 'Sniper:' \$(systemctl is-active solana-sniper)
