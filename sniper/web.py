@@ -391,6 +391,28 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </div>
 {% endif %}
 
+<!-- Manual Trade -->
+<div class="section">
+  <h2>Manual Trade</h2>
+  <div class="trade-form">
+    <div class="form-row">
+      <div class="form-group">
+        <label>Token Address</label>
+        <input type="text" id="trade-token" placeholder="Contract address...">
+      </div>
+      <div class="form-group" style="max-width:120px">
+        <label>SOL Amount</label>
+        <input type="number" id="trade-amount" value="0.2" step="0.01" min="0.01">
+      </div>
+      <div>
+        <button class="btn btn-buy" onclick="executeTrade('buy')">Buy</button>
+        <button class="btn btn-sell" onclick="executeTrade('sell')">Sell</button>
+      </div>
+    </div>
+    <div class="trade-status" id="trade-status"></div>
+  </div>
+</div>
+
 <!-- Closed Positions -->
 <div class="section">
   <h2>Closed Positions</h2>
@@ -443,28 +465,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     {% endfor %}
   </div>
   {% endif %}
-</div>
-
-<!-- Manual Trade -->
-<div class="section">
-  <h2>Manual Trade</h2>
-  <div class="trade-form">
-    <div class="form-row">
-      <div class="form-group">
-        <label>Token Address</label>
-        <input type="text" id="trade-token" placeholder="Contract address...">
-      </div>
-      <div class="form-group" style="max-width:120px">
-        <label>SOL Amount</label>
-        <input type="number" id="trade-amount" value="0.2" step="0.01" min="0.01">
-      </div>
-      <div>
-        <button class="btn btn-buy" onclick="executeTrade('buy')">Buy</button>
-        <button class="btn btn-sell" onclick="executeTrade('sell')">Sell</button>
-      </div>
-    </div>
-    <div class="trade-status" id="trade-status"></div>
-  </div>
 </div>
 
 <!-- Recent Trades -->
