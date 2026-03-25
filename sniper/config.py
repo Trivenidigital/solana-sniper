@@ -33,9 +33,9 @@ class Settings(BaseSettings):
 
     # Risk controls
     MAX_BUY_SOL: float = 1.0  # Match Kelly max
-    MAX_PORTFOLIO_SOL: float = 1.0
+    MAX_PORTFOLIO_SOL: float = 6.0
     MAX_OPEN_POSITIONS: int = 5
-    STOP_LOSS_PCT: float = 35.0
+    STOP_LOSS_PCT: float = 35.0  # PDF: -35% universal stop loss
     TAKE_PROFIT_PCT: float = 100.0
     MIN_CONVICTION_SCORE: float = 70.0
     MIN_LIQUIDITY_USD: float = 15000.0
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # Time-based exit phases (minutes)
     PROTECTION_WINDOW_MIN: int = 10
     MOMENTUM_CHECK_MIN: int = 30
-    MAX_HOLD_MIN: int = 60
+    MAX_HOLD_MIN: int = 180  # PDF: 3 hours max hold
 
     # Phase thresholds
     RUG_DETECT_PCT: float = 50.0        # Phase 1: exit if down this much
@@ -78,18 +78,18 @@ class Settings(BaseSettings):
     MIN_HOLDER_COUNT: int = 5
 
     # Signal freshness
-    MAX_SIGNAL_AGE_SECONDS: int = 120
+    MAX_SIGNAL_AGE_SECONDS: int = 300  # PDF: 5 min signal freshness
 
     # Jupiter
     JUPITER_API_URL: str = "https://lite-api.jup.ag/swap/v1"
     JUPITER_FALLBACK_URL: str = "https://api.jup.ag/swap/v1"
-    SLIPPAGE_BPS: int = 300
+    SLIPPAGE_BPS: int = 500  # PDF: 5% slippage
     JUPITER_TIMEOUT_SEC: int = 30
 
     # Execution
     PAPER_MODE: bool = True
     POLL_INTERVAL_SECONDS: int = 30
-    POSITION_CHECK_INTERVAL_SECONDS: int = 10
+    POSITION_CHECK_INTERVAL_SECONDS: int = 15  # PDF: 15s
     PRIORITY_FEE_LAMPORTS: int = 100000
     PRIORITY_FEE_AUTO: bool = True
 
@@ -112,14 +112,14 @@ class Settings(BaseSettings):
     KELLY_ENABLED: bool = True
     KELLY_LOOKBACK: int = 20       # Number of recent trades to analyze
     KELLY_MIN_TRADES: int = 5      # Minimum trades before Kelly activates
-    KELLY_MIN_BET: float = 0.25    # Floor (SOL)
+    KELLY_MIN_BET: float = 0.50    # PDF: 0.5 SOL floor
     KELLY_MAX_BET: float = 1.0     # Ceiling (SOL)
     KELLY_WIN_RATE_OVERRIDE: float = 0  # Manual override from GMGN (0 = use DB)
     KELLY_PAYOFF_OVERRIDE: float = 0   # Manual override for avg_win/avg_loss ratio (0 = use DB)
 
     # Jito MEV Protection
     JITO_ENABLED: bool = False  # Enable for MEV-protected transactions
-    JITO_TIP_LAMPORTS: int = 100000  # Tip amount (0.0001 SOL default)
+    JITO_TIP_LAMPORTS: int = 10000  # PDF: 10,000 lamports
 
     # Conviction hold — patient exit logic for high-score tokens
     CONVICTION_HOLD_ENABLED: bool = True
