@@ -47,13 +47,13 @@ def _conviction_bet_size(conviction: float, settings: Settings) -> float:
     elif conviction >= 60:
         raw = round(max_bet * 0.50, 4)
     elif conviction >= 55:
-        raw = round(max_bet * 0.40, 4)
+        raw = 0.25  # Low conviction: fixed small bet, not scaled from max
     elif conviction >= 50:
-        raw = round(max_bet * 0.30, 4)
+        raw = 0.20
     elif conviction >= 45:
-        raw = round(max_bet * 0.25, 4)
+        raw = 0.15
     else:
-        raw = settings.KELLY_MIN_BET
+        raw = 0.10
     return min(raw, settings.MAX_BUY_SOL)
 
 
