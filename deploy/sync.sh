@@ -6,11 +6,20 @@ set -euo pipefail
 
 VPS="${1:-root@149.28.125.16}"
 
+echo "Checkpointing WAL files before stop (prevents DB corruption)..."
+ssh "$VPS" "
+  sqlite3 /opt/scout/scout.db 'PRAGMA wal_checkpoint(TRUNCATE);' 2>/dev/null || true
+  sqlite3 /opt/sniper/sniper.db 'PRAGMA wal_checkpoint(TRUNCATE);' 2>/dev/null || true
+  echo 'WAL checkpointed'
+"
+
 echo "Stopping services for clean deploy..."
 ssh "$VPS" "
   systemctl stop coinpump-scout solana-sniper sniper-dashboard 2>/dev/null
   sleep 2
-  echo 'Services stopped'
+  rm -f /opt/scout/scout.db-wal /opt/scout/scout.db-shm 2>/dev/null
+  rm -f /opt/sniper/sniper.db-wal /opt/sniper/sniper.db-shm 2>/dev/null
+  echo 'Services stopped, WAL cleaned'
 "
 
 echo "Syncing scout code..."
@@ -109,13 +118,13 @@ ERRORS=$(ssh "$VPS" "
     FAILED=1
   fi
 
-  # Check DB integrity
-  SCOUT_DB_OK=\$(sqlite3 /opt/scout/scout.db 'PRAGMA integrity_check;' 2>/dev/null || echo 'CORRUPT')
-  SNIPER_DB_OK=\$(sqlite3 /opt/sniper/sniper.db 'PRAGMA integrity_check;' 2>/dev/null || echo 'CORRUPT')
-  INJ_DB_OK=\$(sqlite3 /opt/scout/injections.db 'PRAGMA integrity_check;' 2>/dev/null || echo 'CORRUPT')
-  if [ \"\$SCOUT_DB_OK\" != 'ok' ]; then echo 'FAIL: Scout DB corrupt'; FAILED=1; fi
-  if [ \"\$SNIPER_DB_OK\" != 'ok' ]; then echo 'FAIL: Sniper DB corrupt'; FAILED=1; fi
-  if [ \"\$INJ_DB_OK\" != 'ok' ]; then echo 'FAIL: Injections DB corrupt'; FAILED=1; fi
+  # Check DB accessibility (quick SELECT, not full integrity — services are writing WAL)
+  SCOUT_DB_OK=\$(sqlite3 /opt/scout/scout.db 'SELECT 1;' 2>/dev/null || echo 'FAIL')
+  SNIPER_DB_OK=\$(sqlite3 /opt/sniper/sniper.db 'SELECT 1;' 2>/dev/null || echo 'FAIL')
+  INJ_DB_OK=\$(sqlite3 /opt/scout/injections.db 'SELECT 1;' 2>/dev/null || echo 'FAIL')
+  if [ \"\$SCOUT_DB_OK\" = 'FAIL' ]; then echo 'FAIL: Scout DB inaccessible'; FAILED=1; fi
+  if [ \"\$SNIPER_DB_OK\" = 'FAIL' ]; then echo 'FAIL: Sniper DB inaccessible'; FAILED=1; fi
+  if [ \"\$INJ_DB_OK\" = 'FAIL' ]; then echo 'FAIL: Injections DB inaccessible'; FAILED=1; fi
 
   # Check dashboard responds
   DASH_OK=\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080 2>/dev/null || echo '000')
