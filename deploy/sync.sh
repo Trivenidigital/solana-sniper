@@ -35,13 +35,13 @@ rsync -az --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
   ~/solana-sniper/ "$VPS:/opt/sniper/"
 
 echo "Running DB migrations..."
-ssh "$VPS" "
+ssh "$VPS" '
   # Scout DB migrations (safe — ALTER fails silently if column exists)
-  sqlite3 /opt/scout/scout.db 'ALTER TABLE alerts ADD COLUMN market_cap_usd REAL DEFAULT 0;' 2>/dev/null || true
+  sqlite3 /opt/scout/scout.db "ALTER TABLE alerts ADD COLUMN market_cap_usd REAL DEFAULT 0;" 2>/dev/null || true
   for col in smart_money_buys:INTEGER whale_buys:INTEGER liquidity_locked:INTEGER volume_spike:INTEGER volume_spike_ratio:REAL holder_gini_healthy:INTEGER whale_txns_1h:INTEGER social_score:REAL has_twitter:INTEGER has_telegram:INTEGER has_github:INTEGER on_coingecko:INTEGER multi_dex:INTEGER dex_count:INTEGER news_mentions:INTEGER news_sentiment:REAL has_news:INTEGER; do
-    name=\${col%%:*}; type=\${col##*:}
-    sqlite3 /opt/scout/scout.db "ALTER TABLE candidates ADD COLUMN \$name \$type DEFAULT 0;" 2>/dev/null || true
-  done
+    name=${col%%:*}; type=${col##*:}
+    sqlite3 /opt/scout/scout.db "ALTER TABLE candidates ADD COLUMN $name $type DEFAULT 0;" 2>/dev/null || true
+  done'
   sqlite3 /opt/scout/scout.db '
     CREATE INDEX IF NOT EXISTS idx_alerts_contract ON alerts (contract_address);
     CREATE TABLE IF NOT EXISTS vol_gate_snapshots (
