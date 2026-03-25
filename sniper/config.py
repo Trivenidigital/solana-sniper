@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     MAX_OPEN_POSITIONS: int = 5
     STOP_LOSS_PCT: float = 35.0  # PDF: -35% universal stop loss
     TAKE_PROFIT_PCT: float = 100.0
-    MIN_CONVICTION_SCORE: float = 70.0
+    MIN_CONVICTION_SCORE: float = 45.0
     MIN_LIQUIDITY_USD: float = 15000.0
     MAX_TOKEN_AGE_DAYS: int = 3
 
