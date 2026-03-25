@@ -83,6 +83,8 @@ async def _write_injection(
     wallet: str,
     tx_signature: str,
     source: str = "websocket",
+    send_telegram_fn=None,
+    settings: Settings | None = None,
 ) -> None:
     start = time.monotonic()
     try:
@@ -96,7 +98,26 @@ async def _write_injection(
         if elapsed > 1.0:
             logger.warning("Slow injection write", elapsed_ms=int(elapsed * 1000))
     except Exception as e:
-        logger.error("Failed to write injection", error=str(e), token=token_mint)
+        logger.error(
+            "Failed to write injection",
+            error=str(e),
+            token=token_mint,
+            wallet=wallet[:8] if wallet else "unknown",
+            source=source,
+            tx_signature=tx_signature[:16] if tx_signature else "",
+        )
+        if send_telegram_fn and settings:
+            try:
+                await send_telegram_fn(
+                    f"SMART MONEY SIGNAL LOST\n"
+                    f"DB write failed for {token_mint[:20]}...\n"
+                    f"Wallet: {wallet[:8]}...\n"
+                    f"Source: {source}\n"
+                    f"Error: {e}",
+                    settings,
+                )
+            except Exception:
+                logger.error("Telegram alert for injection failure also failed")
 
 
 async def _extract_bought_token(
@@ -178,6 +199,7 @@ async def _open_scout_db_writer(settings: Settings) -> aiosqlite.Connection:
 async def _backfill_after_reconnect(
     tracked: list[str], settings: Settings,
     last_signatures: dict[str, str], conn: aiosqlite.Connection,
+    send_telegram_fn=None,
 ) -> None:
     if not settings.HELIUS_API_KEY:
         return
@@ -221,7 +243,8 @@ async def _backfill_after_reconnect(
                                     "wallets": {wallet}, "count": 1, "detected_at": now,
                                 }
                         if not already_seen:
-                            await _write_injection(conn, token_mint, wallet, sig, source="backfill")
+                            await _write_injection(conn, token_mint, wallet, sig, source="backfill",
+                                                   send_telegram_fn=send_telegram_fn, settings=settings)
                             logger.info("Backfilled signal — NEW", wallet=wallet[:8], token=token_mint[:20])
                         else:
                             logger.debug("Backfill re-buy skipped", token=token_mint[:20])
@@ -280,7 +303,7 @@ async def monitor_wallets(settings: Settings, buy_callback, send_telegram_fn=Non
                         except asyncio.TimeoutError:
                             pass
                         logger.info("WebSocket connected", subs=confirmed, total=len(tracked))
-                        await _backfill_after_reconnect(tracked, settings, last_signatures, scout_db_conn)
+                        await _backfill_after_reconnect(tracked, settings, last_signatures, scout_db_conn, send_telegram_fn)
                         await sniper_db.execute(
                             "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES ('last_signatures', ?, CURRENT_TIMESTAMP)",
                             (json.dumps(last_signatures),),
@@ -332,7 +355,8 @@ async def monitor_wallets(settings: Settings, buy_callback, send_telegram_fn=Non
                                                 }
                                         last_injection_time = datetime.now(timezone.utc)
                                         if not already_seen:
-                                            await _write_injection(scout_db_conn, token_mint, wallet or "unknown", signature)
+                                            await _write_injection(scout_db_conn, token_mint, wallet or "unknown", signature,
+                                                                   send_telegram_fn=send_telegram_fn, settings=settings)
                                             logger.info("Smart money signal — NEW token",
                                                 wallet=wallet[:8] + "..." if wallet else "unknown",
                                                 token=token_mint[:20])
