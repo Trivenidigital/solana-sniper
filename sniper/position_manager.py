@@ -234,39 +234,9 @@ async def check_positions(
                 actions.append(action)
                 continue
 
-            # Check 4: Trailing at +50%, trail at 20%
-            if pnl_pct >= settings.CONVICTION_HOLD_TRAILING_ACTIVATE_PCT:
-                if not pos.trailing_active and pos.id:
-                    pos.trailing_active = True
-                    await db.set_trailing_active(pos.id)
-                    if pos.peak_value_sol is None or current_value > pos.peak_value_sol:
-                        pos.peak_value_sol = current_value
-                        await db.update_peak_value(pos.id, current_value)
-                    logger.info(
-                        "Conviction hold: trailing activated",
-                        token=pos.token_name,
-                        conviction=conviction_score,
-                        pnl_pct=f"{pnl_pct:.1f}%",
-                    )
-
-            if pos.trailing_active and pos.peak_value_sol:
-                drop_from_peak = (pos.peak_value_sol - current_value) / pos.peak_value_sol * 100
-                if drop_from_peak >= settings.CONVICTION_HOLD_TRAILING_PCT:
-                    logger.info(
-                        "Conviction hold: trailing stop triggered",
-                        token=pos.token_name,
-                        conviction=conviction_score,
-                        pnl_pct=f"{pnl_pct:.1f}%",
-                        drop_from_peak=f"{drop_from_peak:.1f}%",
-                    )
-                    action = await _close_position(
-                        db, client, keypair, session, settings,
-                        pos.id, pos.contract_address, pos.token_name,
-                        int(pos.entry_token_amount), pos.entry_sol,
-                        current_value, pnl_pct, "conviction_trailing_stop",
-                    )
-                    actions.append(action)
-                    continue
+            # Conviction hold trailing REMOVED — profit ladder (PR #30) handles
+            # trailing via step 2 (+50% → trail 25%) and step 3 (+100% → trail 15%).
+            # The old 20% trail was too tight for meme coins (same issue PR #30 fixed).
 
             # Still holding — fall through to profit ladder but skip phase logic
             logger.info(
