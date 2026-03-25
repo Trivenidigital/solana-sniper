@@ -27,6 +27,9 @@ from sniper.wallet import get_sol_balance, load_keypair
 
 logger = structlog.get_logger()
 
+# Tokens previously detected as bundled — never buy even if bundle % drops later
+_bundle_blacklist: set[str] = set()
+
 
 def _conviction_bet_size(conviction: float, settings: Settings) -> float:
     """Return SOL bet size based on conviction score.
@@ -433,6 +436,14 @@ async def main() -> None:
                                 except Exception as e:
                                     logger.debug("GODMODE check exception (fail open)", error=str(e))
 
+                            # Bundle blacklist — once flagged as bundled, never buy
+                            if sig_data.contract_address in _bundle_blacklist:
+                                logger.warning(
+                                    "Token previously flagged as bundled — permanently blocked",
+                                    token=sig_data.token_name,
+                                )
+                                continue
+
                             # Helius-based bundle detection — only for fresh tokens (<30 min old)
                             # Older tokens: bundler already sold, organic holders took over
                             token_age_hours = sig_data.token_age_days * 24 if sig_data.token_age_days else 0
@@ -443,8 +454,9 @@ async def main() -> None:
                                 from sniper.bundle_check import check_bundle
                                 bundle = await check_bundle(sig_data.contract_address, session, settings) if not skip_bundle else {"is_bundled": False, "early_buyers": 0}
                                 if bundle["is_bundled"]:
+                                    _bundle_blacklist.add(sig_data.contract_address)
                                     logger.warning(
-                                        "Helius bundle detected — early buyers share funding source",
+                                        "Helius bundle detected — BLACKLISTED permanently",
                                         token=sig_data.token_name,
                                         bundle_pct=f"{bundle['bundle_pct']:.0f}%",
                                         early_buyers=bundle["early_buyers"],
