@@ -191,13 +191,21 @@ async def check_positions(
                     actions.append(action)
                     continue
 
-            # Check 2: Hard stop at -70%
-            if pnl_pct <= -settings.CONVICTION_HOLD_HARD_STOP_PCT:
+            # Check 2: Scaled hard stop — higher conviction = wider stop
+            # 45 conviction → -35% (same as universal), 80+ → -70% (full diamond hands)
+            scaled_stop = settings.STOP_LOSS_PCT + (
+                (settings.CONVICTION_HOLD_HARD_STOP_PCT - settings.STOP_LOSS_PCT)
+                * (conviction_score - settings.CONVICTION_HOLD_MIN_SCORE)
+                / (80 - settings.CONVICTION_HOLD_MIN_SCORE)
+            )
+            scaled_stop = min(scaled_stop, settings.CONVICTION_HOLD_HARD_STOP_PCT)
+            if pnl_pct <= -scaled_stop:
                 logger.warning(
-                    "Conviction hold: hard stop triggered",
+                    "Conviction hold: scaled hard stop triggered",
                     token=pos.token_name,
                     conviction=conviction_score,
                     pnl_pct=f"{pnl_pct:.1f}%",
+                    scaled_stop=f"-{scaled_stop:.1f}%",
                 )
                 action = await _close_position(
                     db, client, keypair, session, settings,
