@@ -479,8 +479,12 @@ async def main() -> None:
                                         continue
                                     safety_passed = True
                                     logger.info("GoPlus fallback passed", token=sig_data.token_name)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.warning(
+                                        "GoPlus safety check failed",
+                                        token=sig_data.token_name,
+                                        error=str(e),
+                                    )
 
                             # If both checks failed (APIs down), don't buy blind
                             if not safety_passed:
