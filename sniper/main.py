@@ -33,26 +33,28 @@ def _conviction_bet_size(conviction: float, settings: Settings) -> float:
     Tiered sizing: higher conviction = larger bet.
     All values are proportional to KELLY_MAX_BET so the ceiling
     can be adjusted in .env without changing the tiers.
+    Final result is clamped to MAX_BUY_SOL to prevent oversized bets.
     """
     max_bet = settings.KELLY_MAX_BET
     if conviction >= 80:
-        return max_bet
+        raw = max_bet
     elif conviction >= 75:
-        return round(max_bet * 0.90, 4)
+        raw = round(max_bet * 0.90, 4)
     elif conviction >= 70:
-        return round(max_bet * 0.75, 4)
+        raw = round(max_bet * 0.75, 4)
     elif conviction >= 65:
-        return round(max_bet * 0.60, 4)
+        raw = round(max_bet * 0.60, 4)
     elif conviction >= 60:
-        return round(max_bet * 0.50, 4)
+        raw = round(max_bet * 0.50, 4)
     elif conviction >= 55:
-        return round(max_bet * 0.40, 4)
+        raw = round(max_bet * 0.40, 4)
     elif conviction >= 50:
-        return round(max_bet * 0.30, 4)
+        raw = round(max_bet * 0.30, 4)
     elif conviction >= 45:
-        return round(max_bet * 0.25, 4)
+        raw = round(max_bet * 0.25, 4)
     else:
-        return settings.KELLY_MIN_BET
+        raw = settings.KELLY_MIN_BET
+    return min(raw, settings.MAX_BUY_SOL)
 
 
 async def _dashboard_task(db: Database, interval: int, shutdown: asyncio.Event) -> None:
@@ -303,10 +305,10 @@ async def main() -> None:
                             buy_amount = min(buy_amount, settings.KELLY_MAX_BET)
 
                             # Liquidity scaling — uses live DexScreener liquidity
-                            # Only scales DOWN for thin liquidity tokens (<$20K)
+                            # Only scales DOWN for thin liquidity tokens
                             if settings.LIQUIDITY_SIZING_ENABLED and live_liq > 0:
-                                if live_liq < 20000:
-                                    size_ratio = live_liq / 20000
+                                if live_liq < settings.MIN_LIQUIDITY_USD:
+                                    size_ratio = live_liq / settings.MIN_LIQUIDITY_USD
                                     buy_amount = round(buy_amount * size_ratio, 4)
                                     logger.info(
                                         "Liquidity scaling applied",

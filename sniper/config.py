@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     SCOUT_DB_PATH: Path = Path("../coinpump-scout/scout.db")
 
     # Injections DB (shared with scout — sniper inserts, scout marks processed)
-    INJECTIONS_DB_PATH: str = "/opt/scout/injections.db"
+    INJECTIONS_DB_PATH: str = "../coinpump-scout/injections.db"
 
     # Sniper DB (read-write)
     SNIPER_DB_PATH: Path = Path("sniper.db")
@@ -123,7 +123,7 @@ class Settings(BaseSettings):
 
     # Conviction hold — patient exit logic for high-score tokens
     CONVICTION_HOLD_ENABLED: bool = True
-    CONVICTION_HOLD_MIN_SCORE: float = 70.0
+    CONVICTION_HOLD_MIN_SCORE: float = 45.0
     CONVICTION_HOLD_MAX_HOLD_MIN: float = 240  # 4 hours
     CONVICTION_HOLD_TRAILING_ACTIVATE_PCT: float = 50.0
     CONVICTION_HOLD_TRAILING_PCT: float = 20.0
