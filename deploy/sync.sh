@@ -35,51 +35,49 @@ rsync -az --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
   ~/solana-sniper/ "$VPS:/opt/sniper/"
 
 echo "Running DB migrations..."
-ssh "$VPS" '
+ssh "$VPS" 'bash -s' << 'MIGRATIONS'
   # Scout DB migrations (safe — ALTER fails silently if column exists)
   sqlite3 /opt/scout/scout.db "ALTER TABLE alerts ADD COLUMN market_cap_usd REAL DEFAULT 0;" 2>/dev/null || true
   for col in smart_money_buys:INTEGER whale_buys:INTEGER liquidity_locked:INTEGER volume_spike:INTEGER volume_spike_ratio:REAL holder_gini_healthy:INTEGER whale_txns_1h:INTEGER social_score:REAL has_twitter:INTEGER has_telegram:INTEGER has_github:INTEGER on_coingecko:INTEGER multi_dex:INTEGER dex_count:INTEGER news_mentions:INTEGER news_sentiment:REAL has_news:INTEGER; do
     name=${col%%:*}; type=${col##*:}
     sqlite3 /opt/scout/scout.db "ALTER TABLE candidates ADD COLUMN $name $type DEFAULT 0;" 2>/dev/null || true
-  done'
-  sqlite3 /opt/scout/scout.db '
+  done
+  sqlite3 /opt/scout/scout.db "
     CREATE INDEX IF NOT EXISTS idx_alerts_contract ON alerts (contract_address);
     CREATE TABLE IF NOT EXISTS vol_gate_snapshots (
       contract_address TEXT, vol_5min REAL, recorded_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_vol_gate_snapshots_contract
       ON vol_gate_snapshots (contract_address, recorded_at DESC);
-  ' 2>/dev/null || true
+  " 2>/dev/null || true
 
-  # Injections DB (shared between sniper writes + scout reads — separate from scout.db)
-  sqlite3 /opt/scout/injections.db '
+  # Injections DB
+  sqlite3 /opt/scout/injections.db "
     CREATE TABLE IF NOT EXISTS smart_money_injections (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       token_mint TEXT NOT NULL,
       wallet_address TEXT NOT NULL,
       tx_signature TEXT,
-      source TEXT DEFAULT \"websocket\",
+      source TEXT DEFAULT 'websocket',
       detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       processed INTEGER DEFAULT 0,
       UNIQUE(token_mint, tx_signature)
     );
     CREATE INDEX IF NOT EXISTS idx_smi_unprocessed
       ON smart_money_injections(processed, detected_at);
-  ' 2>/dev/null || true
+  " 2>/dev/null || true
 
   # Sniper DB migrations
-  sqlite3 /opt/sniper/sniper.db '
-    ALTER TABLE positions ADD COLUMN partial_exit_tier INTEGER DEFAULT 0;
-  ' 2>/dev/null || true
-  sqlite3 /opt/sniper/sniper.db '
+  sqlite3 /opt/sniper/sniper.db "ALTER TABLE positions ADD COLUMN partial_exit_tier INTEGER DEFAULT 0;" 2>/dev/null || true
+  sqlite3 /opt/sniper/sniper.db "
     CREATE TABLE IF NOT EXISTS kv_store (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
-  ' 2>/dev/null || true
+  " 2>/dev/null || true
   echo 'DB migrations done'
-"
+MIGRATIONS
 
 echo "Restarting services..."
 ssh "$VPS" "
