@@ -259,8 +259,14 @@ async def check_positions(
             await db.update_peak_value(pos.id, current_value)
 
         # --- Profit ladder + breakeven stop ---
-        # Step 1: Sell 25% at +25%, move stop to breakeven
-        if (pnl_pct >= 25
+        # High conviction (70+) gets wider ladder — let winners run longer
+        high_conv = (pos.conviction_score or 0) >= 70
+        step1_trigger = 50 if high_conv else 25
+        step2_trigger = 100 if high_conv else 50
+        step3_trigger = 200 if high_conv else 100
+
+        # Step 1: Sell 25%, move stop to breakeven
+        if (pnl_pct >= step1_trigger
                 and pos.partial_exit_tier < 1
                 and pos.id is not None):
             await _partial_sell(
@@ -271,16 +277,18 @@ async def check_positions(
                 "Ladder step 1: sold 25%, stop moved to breakeven",
                 token=pos.token_name,
                 pnl_pct=f"{pnl_pct:.1f}%",
+                trigger=f"+{step1_trigger}%",
+                high_conviction=high_conv,
             )
             continue
 
-        # Step 2: Sell 25% more at +50%, activate trailing at 25% from peak
-        if (pnl_pct >= 50
+        # Step 2: Sell 25% more, activate trailing at 25% from peak
+        if (pnl_pct >= step2_trigger
                 and pos.partial_exit_tier < 2
                 and pos.id is not None):
             await _partial_sell(
                 db, client, keypair, session, settings,
-                pos, 0.33, pnl_pct, actions, tier=2,  # 33% of remaining = 25% of original
+                pos, 0.33, pnl_pct, actions, tier=2,
             )
             if not pos.trailing_active:
                 pos.trailing_active = True
@@ -289,21 +297,25 @@ async def check_positions(
                 "Ladder step 2: sold 25% more, trailing active at 25%",
                 token=pos.token_name,
                 pnl_pct=f"{pnl_pct:.1f}%",
+                trigger=f"+{step2_trigger}%",
+                high_conviction=high_conv,
             )
             continue
 
-        # Step 3: Sell 25% more at +100%, tighten trail to 15%
-        if (pnl_pct >= 100
+        # Step 3: Sell 25% more, tighten trail to 15%
+        if (pnl_pct >= step3_trigger
                 and pos.partial_exit_tier < 3
                 and pos.id is not None):
             await _partial_sell(
                 db, client, keypair, session, settings,
-                pos, 0.50, pnl_pct, actions, tier=3,  # 50% of remaining = 25% of original
+                pos, 0.50, pnl_pct, actions, tier=3,
             )
             logger.info(
                 "Ladder step 3: sold 25% more, trail tightened to 15%",
                 token=pos.token_name,
                 pnl_pct=f"{pnl_pct:.1f}%",
+                trigger=f"+{step3_trigger}%",
+                high_conviction=high_conv,
             )
             continue
 
