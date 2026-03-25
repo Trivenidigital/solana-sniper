@@ -65,7 +65,7 @@ REALIZED=$(sqlite3 /opt/sniper/sniper.db "SELECT ROUND(COALESCE(SUM(pnl_sol),0),
 # 7. Alerts fired in last hour
 ALERTS_FIRED=$(journalctl -u coinpump-scout --since "1 hour ago" --no-pager --output=cat 2>/dev/null | grep '"alerts_fired"' | grep -oP '"alerts_fired":\s*\K[0-9]+' | awk '{s+=$1}END{print s+0}' || echo "0")
 
-# Send Telegram only if issues found
+# Send Telegram always — success or failure
 if [ -n "$ISSUES" ]; then
   MSG="🚨 SNIPER HEALTH CHECK
 $(date -u +%H:%M)Z
@@ -74,9 +74,15 @@ ${ISSUES}
 📊 Positions: ${OPEN_POS} (${EXPOSURE} SOL)
 💰 Realized: ${REALIZED} SOL
 📡 Alerts/hr: ${ALERTS_FIRED}"
-  curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-    -d chat_id="$CHAT_ID" -d "text=$(echo -e "$MSG")" >/dev/null 2>&1
+else
+  MSG="✅ SNIPER OK — $(date -u +%H:%M)Z
+📊 Positions: ${OPEN_POS} (${EXPOSURE} SOL)
+💰 Realized: ${REALIZED} SOL
+📡 Alerts/hr: ${ALERTS_FIRED}
+🔄 Helius 429s: ${HELIUS_429} | Rugcheck 429s: ${RUGCHECK_429}"
 fi
+curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+  -d chat_id="$CHAT_ID" -d "text=$(echo -e "$MSG")" >/dev/null 2>&1
 
 # Always log
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) | pos=${OPEN_POS} exp=${EXPOSURE} pnl=${REALIZED} alerts=${ALERTS_FIRED} scout_err=${SCOUT_ERRORS} sniper_err=${SNIPER_ERRORS} helius=${HELIUS_429} rugcheck=${RUGCHECK_429} anthropic=${ANTHROPIC_ERR} issues=$([ -n "$ISSUES" ] && echo 'YES' || echo 'NONE')" >> "$LOG"
