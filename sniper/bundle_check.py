@@ -9,6 +9,7 @@ multiple buyers were funded by the same parent wallet.
 
 import asyncio
 from collections import Counter
+from datetime import date
 
 import aiohttp
 import structlog
@@ -16,6 +17,26 @@ import structlog
 from sniper.config import Settings
 
 logger = structlog.get_logger()
+
+# Daily Helius call limit for bundle detection
+_bundle_calls_today = 0
+_bundle_reset_date: date | None = None
+_BUNDLE_DAILY_LIMIT = 10_000
+
+
+def _check_bundle_limit() -> bool:
+    """Return True if under daily limit, False if exhausted."""
+    global _bundle_calls_today, _bundle_reset_date
+    today = date.today()
+    if _bundle_reset_date != today:
+        _bundle_calls_today = 0
+        _bundle_reset_date = today
+    if _bundle_calls_today >= _BUNDLE_DAILY_LIMIT:
+        logger.warning("Sniper Helius bundle daily limit reached", calls=_bundle_calls_today)
+        return False
+    _bundle_calls_today += 1
+    return True
+
 
 # If X% or more of early buyers share a funding source, it's bundled
 BUNDLE_THRESHOLD_PCT = 30  # 30% of early buyers from same source = bundled
@@ -47,6 +68,12 @@ async def check_bundle(
             "same_block_buyers": int,  # buyers in the same block as first tx
         }
     """
+    if not _check_bundle_limit():
+        return {
+            "is_bundled": False, "bundle_pct": 0.0, "top_funder": "",
+            "early_buyers": 0, "same_block_buyers": 0,
+        }
+
     result = {
         "is_bundled": False,
         "bundle_pct": 0.0,
