@@ -24,6 +24,15 @@ if [ "$LAST_CYCLE" -eq 0 ]; then
   ISSUES="${ISSUES}❌ Scout: no cycles in 5 min\n"
 fi
 
+# 2b. Sniper signal reading (should read signals every 30s)
+LAST_SIGNAL_READ=$(journalctl -u solana-sniper --since "5 minutes ago" --no-pager --output=cat 2>/dev/null | grep -c "New signals\|Signal dropped\|Signals skipped" || true)
+if [ "$LAST_SIGNAL_READ" -eq 0 ]; then
+  ISSUES="${ISSUES}❌ Sniper: no signal reads in 5 min — STUCK\n"
+  # Auto-fix: restart sniper if stuck
+  systemctl restart solana-sniper
+  ISSUES="${ISSUES}🔄 AUTO-RESTARTED solana-sniper\n"
+fi
+
 # 3. Error counts in last hour
 SCOUT_ERRORS=$(journalctl -u coinpump-scout --since "1 hour ago" --no-pager --output=cat 2>/dev/null | grep -c '"level":"error"' || true)
 SNIPER_ERRORS=$(journalctl -u solana-sniper --since "1 hour ago" --no-pager --output=cat 2>/dev/null | grep -c '"level":"error"' || true)

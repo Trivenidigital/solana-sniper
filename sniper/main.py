@@ -648,10 +648,15 @@ async def main() -> None:
                                     error=str(e),
                                 )
 
-                    # --- Position monitoring phase ---
-                    actions = await check_positions(
-                        db, rpc_client, keypair, session, settings,
-                    )
+                    # --- Position monitoring phase (timeout prevents hangs) ---
+                    try:
+                        actions = await asyncio.wait_for(
+                            check_positions(db, rpc_client, keypair, session, settings),
+                            timeout=60,  # 60s max — if stuck, skip and retry next cycle
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error("Position check TIMED OUT after 60s — possible hung RPC call")
+                        actions = []
 
                     # --- Periodic portfolio summary ---
                     cycle_count += 1
