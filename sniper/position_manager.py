@@ -1,6 +1,7 @@
 """Position monitoring — time-based phase exits with trailing tiers."""
 
 import asyncio
+import time
 from datetime import datetime, timezone
 
 import aiohttp
@@ -13,6 +14,10 @@ from sniper.db import Database
 from sniper.executor import execute_buy, execute_sell
 from sniper.jupiter import SOL_MINT, LAMPORTS_PER_SOL, get_quote
 from sniper.telegram_notify import send_telegram
+
+# B2 fix: cache DexScreener liquidity per token to avoid hammering API
+_liq_cache: dict[str, tuple[float, float]] = {}  # {contract: (liq_usd, timestamp)}
+_LIQ_CACHE_TTL = 60  # seconds
 
 logger = structlog.get_logger()
 
@@ -139,21 +144,30 @@ async def check_positions(
                 pos.peak_value_sol = current_value
                 await db.update_peak_value(pos.id, current_value)
 
-            # Check 1: Liquidity rug — fetch live from DexScreener
+            # Check 1: Liquidity rug — fetch live from DexScreener (cached 60s)
             liq_usd = 0.0
-            try:
-                async with session.get(
-                    f"https://api.dexscreener.com/tokens/v1/solana/{pos.contract_address}",
-                    timeout=aiohttp.ClientTimeout(total=5),
-                ) as resp:
-                    if resp.status == 200:
-                        pairs = await resp.json()
-                        if pairs and isinstance(pairs, list):
-                            liq_obj = pairs[0].get("liquidity")
-                            if liq_obj and isinstance(liq_obj, dict):
-                                liq_usd = float(liq_obj.get("usd", 0) or 0)
-            except Exception:
-                pass
+            cached = _liq_cache.get(pos.contract_address)
+            if cached and (time.monotonic() - cached[1]) < _LIQ_CACHE_TTL:
+                liq_usd = cached[0]
+            else:
+                try:
+                    async with session.get(
+                        f"https://api.dexscreener.com/tokens/v1/solana/{pos.contract_address}",
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as resp:
+                        if resp.status == 200:
+                            pairs = await resp.json()
+                            if pairs and isinstance(pairs, list):
+                                liq_obj = pairs[0].get("liquidity")
+                                if liq_obj and isinstance(liq_obj, dict):
+                                    liq_usd = float(liq_obj.get("usd", 0) or 0)
+                    _liq_cache[pos.contract_address] = (liq_usd, time.monotonic())
+                except Exception as e:
+                    logger.warning(
+                        "Conviction hold: DexScreener liquidity fetch failed — rug check skipped",
+                        token=pos.token_name,
+                        error=str(e),
+                    )
 
             # If liquidity dropped 70%+ from entry → real rug
             entry_liq = pos.entry_liquidity_usd or 0
@@ -246,7 +260,7 @@ async def check_positions(
                     actions.append(action)
                     continue
 
-            # Still holding — log and skip normal phase logic
+            # Still holding — fall through to profit ladder but skip phase logic
             logger.info(
                 "Conviction hold: holding",
                 token=pos.token_name,
@@ -254,7 +268,7 @@ async def check_positions(
                 pnl_pct=f"{pnl_pct:.1f}%",
                 age_minutes=f"{age_minutes:.1f}",
             )
-            continue  # SKIP normal phase logic
+            # DON'T continue — let conviction holds use the profit ladder below
 
         # Use fixed phase timings from settings directly
         protection_end = settings.PROTECTION_WINDOW_MIN
@@ -376,7 +390,9 @@ async def check_positions(
             actions.append(action)
             continue
 
-        # --- Phase-based exit logic ---
+        # --- Phase-based exit logic (skip for conviction holds) ---
+        if is_conviction_hold:
+            continue
 
         # Phase 1: Protection (0-{protection_end} min)
         if age_minutes <= protection_end:
