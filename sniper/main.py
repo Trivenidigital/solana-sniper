@@ -14,7 +14,6 @@ from sniper.copy_trader import monitor_wallets, smart_money_signals, prune_stale
 from sniper.dashboard import print_dashboard
 from sniper.db import Database
 from sniper.executor import execute_buy, execute_buy_split
-from sniper.kelly import calculate_kelly_bet
 from sniper.models import Position
 from sniper.multi_wallet import copy_buy, load_wallets, get_all_balances
 from sniper.position_manager import check_positions, portfolio_summary
@@ -28,7 +27,30 @@ from sniper.wallet import get_sol_balance, load_keypair
 logger = structlog.get_logger()
 
 # Tokens previously detected as bundled — never buy even if bundle % drops later
+# Persisted to kv_store on add, loaded on startup
 _bundle_blacklist: set[str] = set()
+
+
+async def _load_bundle_blacklist(db) -> None:
+    """Load persisted bundle blacklist from DB on startup."""
+    try:
+        row = await db.kv_get("bundle_blacklist")
+        if row:
+            import json
+            _bundle_blacklist.update(json.loads(row))
+            logger.info("Bundle blacklist loaded", count=len(_bundle_blacklist))
+    except Exception:
+        pass
+
+
+async def _save_bundle_blacklist(db, contract: str) -> None:
+    """Persist bundle blacklist after adding a token."""
+    _bundle_blacklist.add(contract)
+    try:
+        import json
+        await db.kv_set("bundle_blacklist", json.dumps(list(_bundle_blacklist)))
+    except Exception:
+        pass
 
 
 def _conviction_bet_size(conviction: float, settings: Settings) -> float:
@@ -51,13 +73,13 @@ def _conviction_bet_size(conviction: float, settings: Settings) -> float:
     elif conviction >= 60:
         raw = round(max_bet * 0.50, 4)
     elif conviction >= 55:
-        raw = 0.25  # Low conviction: fixed small bet, not scaled from max
+        raw = round(max_bet * 0.25, 4)
     elif conviction >= 50:
-        raw = 0.20
+        raw = round(max_bet * 0.20, 4)
     elif conviction >= 45:
-        raw = 0.15
+        raw = round(max_bet * 0.15, 4)
     else:
-        raw = 0.10
+        raw = round(max_bet * 0.10, 4)
     return min(raw, settings.MAX_BUY_SOL)
 
 
@@ -136,6 +158,7 @@ async def main() -> None:
     # Initialize DB
     db = Database(settings.SNIPER_DB_PATH)
     await db.initialize()
+    await _load_bundle_blacklist(db)
 
     # Solana RPC client
     rpc_client = AsyncClient(settings.SOLANA_RPC_URL)
@@ -304,7 +327,13 @@ async def main() -> None:
                                                     token=sig_data.token_name,
                                                 )
                             except Exception as e:
-                                logger.debug("DexScreener liquidity check failed, proceeding", error=str(e))
+                                logger.warning("DexScreener liquidity check failed — skipping buy", error=str(e))
+                                continue
+
+                            # If DexScreener returned no data, don't buy blind
+                            if live_liq == 0:
+                                logger.warning("No liquidity data — skipping buy", token=sig_data.token_name)
+                                continue
 
                             # Direct tiered sizing based on conviction score
                             buy_amount = _conviction_bet_size(conviction, settings)
@@ -465,7 +494,7 @@ async def main() -> None:
                                 from sniper.bundle_check import check_bundle
                                 bundle = await check_bundle(sig_data.contract_address, session, settings) if not skip_bundle else {"is_bundled": False, "early_buyers": 0}
                                 if bundle["is_bundled"]:
-                                    _bundle_blacklist.add(sig_data.contract_address)
+                                    await _save_bundle_blacklist(db, sig_data.contract_address)
                                     logger.warning(
                                         "Helius bundle detected — BLACKLISTED permanently",
                                         token=sig_data.token_name,
@@ -561,7 +590,7 @@ async def main() -> None:
                                             entry_tx=r["tx"],
                                             paper=settings.PAPER_MODE,
                                             decimals=r.get("decimals"),
-                                            conviction_score=sig_data.conviction_score,
+                                            conviction_score=conviction,  # Use boosted conviction (includes smart money), not raw sig_data score
                                             entry_liquidity_usd=live_liq,
                                             entry_mcap_usd=live_mcap,
                                         )
@@ -638,7 +667,7 @@ async def main() -> None:
                                         entry_tx=tx_sig,
                                         paper=settings.PAPER_MODE,
                                         decimals=decimals,
-                                        conviction_score=sig_data.conviction_score,
+                                        conviction_score=conviction,  # Use boosted conviction (includes smart money), not raw sig_data score
                                         entry_liquidity_usd=live_liq,
                                         entry_mcap_usd=live_mcap,
                                     )
