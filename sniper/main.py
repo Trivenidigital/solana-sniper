@@ -312,6 +312,17 @@ async def main() -> None:
                             # Apply hard ceiling
                             buy_amount = min(buy_amount, settings.KELLY_MAX_BET)
 
+                            # Fresh token cap — worst rugs are all < 30min old
+                            token_age_min = sig_data.token_age_days * 24 * 60 if sig_data.token_age_days else 0
+                            if token_age_min < 30:
+                                buy_amount = min(buy_amount, 0.25)
+                                logger.info("Fresh token cap applied (<30min)", token=sig_data.token_name,
+                                            age_min=f"{token_age_min:.0f}", capped_to="0.25 SOL")
+                            elif token_age_min < 60:
+                                buy_amount = min(buy_amount, 0.50)
+                                logger.info("Fresh token cap applied (<60min)", token=sig_data.token_name,
+                                            age_min=f"{token_age_min:.0f}", capped_to="0.50 SOL")
+
                             # Liquidity scaling — uses live DexScreener liquidity
                             # Only scales DOWN for thin liquidity tokens
                             if settings.LIQUIDITY_SIZING_ENABLED and live_liq > 0:
