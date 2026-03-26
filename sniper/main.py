@@ -357,7 +357,7 @@ async def main() -> None:
 
                             if not settings.PAPER_MODE:
                                 max_available = cycle_balance - 0.01  # Reserve for gas
-                                if max_available < settings.KELLY_MIN_BET:
+                                if max_available < 0.10:  # Absolute min for gas, not KELLY_MIN_BET
                                     logger.warning("Insufficient SOL", balance=cycle_balance)
                                     break
                                 if buy_amount > max_available:
