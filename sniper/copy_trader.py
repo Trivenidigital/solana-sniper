@@ -213,8 +213,8 @@ async def _backfill_after_reconnect(
                     f"?api-key={settings.HELIUS_API_KEY}&limit=20&type=SWAP"
                 )
                 last_sig = last_signatures.get(wallet)
-                if last_sig:
-                    url += f"&before={last_sig}"
+                # Don't use 'before' — it returns OLDER txns, missing new ones
+                # Just fetch latest 20 and check age + dedup
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status != 200:
                         continue
@@ -247,12 +247,12 @@ async def _backfill_after_reconnect(
                                                    send_telegram_fn=send_telegram_fn, settings=settings)
                             logger.info("Backfilled signal — NEW", wallet=wallet[:8], token=token_mint[:20])
                         else:
-                            logger.debug("Backfill re-buy skipped", token=token_mint[:20])
+                            logger.info("Backfill re-buy skipped", token=token_mint[:20])
                     if sig:
                         last_signatures[wallet] = sig
                 await asyncio.sleep(0.5)
             except Exception as e:
-                logger.debug("Backfill failed", wallet=wallet[:8], error=str(e))
+                logger.warning("Backfill failed", wallet=wallet[:8], error=str(e))
 
 
 async def monitor_wallets(settings: Settings, buy_callback, send_telegram_fn=None) -> None:
