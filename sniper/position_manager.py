@@ -193,10 +193,11 @@ async def check_positions(
 
             # Check 2: Scaled hard stop — higher conviction = wider stop
             # 45 conviction → -35% (same as universal), 80+ → -70% (full diamond hands)
+            denom = max(1, 80 - settings.CONVICTION_HOLD_MIN_SCORE)
             scaled_stop = settings.STOP_LOSS_PCT + (
                 (settings.CONVICTION_HOLD_HARD_STOP_PCT - settings.STOP_LOSS_PCT)
                 * (conviction_score - settings.CONVICTION_HOLD_MIN_SCORE)
-                / (80 - settings.CONVICTION_HOLD_MIN_SCORE)
+                / denom
             )
             scaled_stop = min(scaled_stop, settings.CONVICTION_HOLD_HARD_STOP_PCT)
             if pnl_pct <= -scaled_stop:

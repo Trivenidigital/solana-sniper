@@ -152,6 +152,7 @@ async def _handle_close(token_query: str, session: aiohttp.ClientSession, settin
 
     try:
         async with aiosqlite.connect(str(settings.SNIPER_DB_PATH)) as db:
+            await db.execute("PRAGMA busy_timeout=5000")
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT * FROM positions WHERE status='open' AND "
@@ -244,6 +245,7 @@ async def _handle_closeall(session: aiohttp.ClientSession, settings: Settings) -
 
     try:
         async with aiosqlite.connect(str(settings.SNIPER_DB_PATH)) as db:
+            await db.execute("PRAGMA busy_timeout=5000")
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM positions WHERE status='open'")
             positions = [dict(r) for r in await cursor.fetchall()]
