@@ -270,6 +270,12 @@ async def main() -> None:
                                 logger.info("Max positions reached", count=open_count)
                                 break
 
+                            # Duplicate token check: never buy a token we already hold
+                            if await db.has_open_position(sig_data.contract_address):
+                                logger.debug("Skipping — already have open position",
+                                             token=sig_data.token_name)
+                                continue
+
                             # Conviction-based direct sizing
                             conviction = sig_data.conviction_score or 0
 
@@ -304,8 +310,23 @@ async def main() -> None:
                                     if dex_resp.status == 200:
                                         dex_data = await dex_resp.json()
                                         if isinstance(dex_data, list) and dex_data:
-                                            live_mcap = float(dex_data[0].get("marketCap") or 0)
-                                            liq_obj = dex_data[0].get("liquidity")
+                                            pair = dex_data[0]
+                                            live_mcap = float(pair.get("marketCap") or 0)
+
+                                            # Real-time peak detection: check if token is dumping after pump
+                                            price_change = pair.get("priceChange") or {}
+                                            pc_5m = float(price_change.get("m5") or 0)
+                                            pc_1h = float(price_change.get("h1") or 0)
+                                            if pc_5m < -5 and pc_1h > 50:
+                                                logger.warning(
+                                                    "Peak detected — price dumping after pump, skipping",
+                                                    token=sig_data.token_name,
+                                                    price_change_5m=f"{pc_5m:.1f}%",
+                                                    price_change_1h=f"{pc_1h:.1f}%",
+                                                )
+                                                continue
+
+                                            liq_obj = pair.get("liquidity")
                                             if liq_obj and isinstance(liq_obj, dict):
                                                 live_liq = float(liq_obj.get("usd", 0) or 0)
                                                 if live_liq > 0 and live_liq < settings.MIN_LIQUIDITY_USD:

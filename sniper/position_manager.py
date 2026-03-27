@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+import uuid
 from datetime import datetime, timezone
 
 import aiohttp
@@ -18,6 +19,7 @@ from sniper.telegram_notify import send_telegram
 # B2 fix: cache DexScreener liquidity per token to avoid hammering API
 _liq_cache: dict[str, tuple[float, float]] = {}  # {contract: (liq_usd, timestamp)}
 _LIQ_CACHE_TTL = 60  # seconds
+_LIQ_CACHE_MAX = 200  # prune cache when it exceeds this size
 
 logger = structlog.get_logger()
 
@@ -105,11 +107,12 @@ async def check_positions(
 
     actions: list[str] = []
 
-    # Filter out paper and manual positions — user manages these via dashboard
-    active_positions = [pos for pos in positions if not pos.paper and not pos.manual]
+    # Filter out manual positions — user manages these via dashboard
+    # Paper positions go through the same exit logic with simulated sells
+    active_positions = [pos for pos in positions if not pos.manual]
     skipped = len(positions) - len(active_positions)
     if skipped:
-        logger.debug("Skipping paper/manual positions", count=skipped)
+        logger.debug("Skipping manual positions", count=skipped)
 
     # Batch price check: single DexScreener call per active position
     data_tasks = [
@@ -162,6 +165,12 @@ async def check_positions(
                                 if liq_obj and isinstance(liq_obj, dict):
                                     liq_usd = float(liq_obj.get("usd", 0) or 0)
                     _liq_cache[pos.contract_address] = (liq_usd, time.monotonic())
+                    # Prune stale entries when cache grows too large
+                    if len(_liq_cache) > _LIQ_CACHE_MAX:
+                        now = time.monotonic()
+                        stale = [k for k, (_, ts) in _liq_cache.items() if now - ts > _LIQ_CACHE_TTL]
+                        for k in stale:
+                            del _liq_cache[k]
                 except Exception as e:
                     logger.warning(
                         "Conviction hold: DexScreener liquidity fetch failed — rug check skipped",
@@ -187,6 +196,7 @@ async def check_positions(
                         pos.id, pos.contract_address, pos.token_name,
                         int(pos.entry_token_amount), pos.entry_sol,
                         current_value, pnl_pct, "conviction_rug_detected",
+                        paper=pos.paper,
                     )
                     actions.append(action)
                     continue
@@ -213,6 +223,7 @@ async def check_positions(
                     pos.id, pos.contract_address, pos.token_name,
                     int(pos.entry_token_amount), pos.entry_sol,
                     current_value, pnl_pct, "conviction_hard_stop",
+                    paper=pos.paper,
                 )
                 actions.append(action)
                 continue
@@ -231,6 +242,7 @@ async def check_positions(
                     pos.id, pos.contract_address, pos.token_name,
                     int(pos.entry_token_amount), pos.entry_sol,
                     current_value, pnl_pct, "conviction_max_hold",
+                    paper=pos.paper,
                 )
                 actions.append(action)
                 continue
@@ -273,6 +285,7 @@ async def check_positions(
             await _partial_sell(
                 db, client, keypair, session, settings,
                 pos, 0.25, pnl_pct, actions, tier=1,
+                current_value=current_value,
             )
             logger.info(
                 "Ladder step 1: sold 25%, stop moved to breakeven",
@@ -290,6 +303,7 @@ async def check_positions(
             await _partial_sell(
                 db, client, keypair, session, settings,
                 pos, 0.33, pnl_pct, actions, tier=2,
+                current_value=current_value,
             )
             if not pos.trailing_active:
                 pos.trailing_active = True
@@ -310,6 +324,7 @@ async def check_positions(
             await _partial_sell(
                 db, client, keypair, session, settings,
                 pos, 0.50, pnl_pct, actions, tier=3,
+                current_value=current_value,
             )
             logger.info(
                 "Ladder step 3: sold 25% more, trail tightened to 15%",
@@ -334,6 +349,7 @@ async def check_positions(
                 pos.id, pos.contract_address, pos.token_name,
                 int(pos.entry_token_amount), pos.entry_sol,
                 current_value, pnl_pct, "breakeven_stop",
+                paper=pos.paper,
             )
             actions.append(action)
             continue
@@ -359,6 +375,7 @@ async def check_positions(
                     pos.id, pos.contract_address, pos.token_name,
                     int(pos.entry_token_amount), pos.entry_sol,
                     current_value, pnl_pct, "trailing_stop",
+                    paper=pos.paper,
                 )
                 actions.append(action)
                 continue
@@ -377,6 +394,7 @@ async def check_positions(
                 pos.id, pos.contract_address, pos.token_name,
                 int(pos.entry_token_amount), pos.entry_sol,
                 current_value, pnl_pct, "stop_loss",
+                paper=pos.paper,
             )
             actions.append(action)
             continue
@@ -478,6 +496,7 @@ async def check_positions(
                     pos.id, pos.contract_address, pos.token_name,
                     int(pos.entry_token_amount), pos.entry_sol,
                     current_value, pnl_pct, "rug_detected",
+                    paper=pos.paper,
                 )
                 actions.append(action)
                 continue
@@ -494,6 +513,7 @@ async def check_positions(
                     pos.id, pos.contract_address, pos.token_name,
                     int(pos.entry_token_amount), pos.entry_sol,
                     current_value, pnl_pct, "stop_loss",
+                    paper=pos.paper,
                 )
                 actions.append(action)
                 continue
@@ -529,29 +549,6 @@ async def check_positions(
                     pnl_pct=f"{pnl_pct:.1f}%",
                     age_minutes=f"{age_minutes:.1f}",
                 )
-
-            # DCA: if high-conviction token dips 15-25% but sell pressure is normal, buy more
-            if settings.DCA_ENABLED and pnl_pct < -5 and pnl_pct > -10:
-                sell_ratio_dca = sell_ratio  # reuse sell_ratio from _fetch_position_data
-                if sell_ratio_dca is not None and sell_ratio_dca < 0.5:
-                    # Only DCA once per position
-                    if pos.dca_completed == 0:
-                        logger.info("DCA opportunity", token=pos.token_name, pnl=f"{pnl_pct:.1f}%")
-                        try:
-                            dca_amount = pos.entry_sol * 0.5  # Buy half the original size
-                            tx_sig, tokens, _dca_decimals = await execute_buy(
-                                client, keypair, session, pos.contract_address, dca_amount, settings,
-                            )
-                            # Update position with new tokens and adjusted entry
-                            new_tokens = pos.entry_token_amount + tokens
-                            new_entry = pos.entry_sol + dca_amount
-                            await db.update_dca_entry(pos.id, new_entry, new_tokens)
-                            pos.entry_sol = new_entry
-                            pos.entry_token_amount = new_tokens
-                            await db.mark_dca_completed(pos.id)
-                            actions.append(f"DCA: {pos.token_name} added {dca_amount} SOL")
-                        except Exception as e:
-                            logger.warning("DCA buy failed", token=pos.token_name, error=str(e))
 
         # Phase 3: Hold window ({momentum_end}-{max_hold} min)
         # No pump_window_expired exit — meme coins need time to build momentum.
@@ -593,6 +590,7 @@ async def check_positions(
                     pos.id, pos.contract_address, pos.token_name,
                     int(pos.entry_token_amount), pos.entry_sol,
                     current_value, pnl_pct, "max_hold_exceeded",
+                    paper=pos.paper,
                 )
                 # Cooldown removed — trust conviction score for re-entry
                 actions.append(action)
@@ -627,6 +625,7 @@ async def _partial_sell(
     pnl_pct: float,
     actions: list[str],
     tier: int = 1,
+    current_value: float | None = None,
 ) -> None:
     """Execute a partial sell of a position and mark it in the DB."""
     if pos.id is None:
@@ -635,10 +634,17 @@ async def _partial_sell(
         total_tokens = int(pos.entry_token_amount)
         sell_tokens = round(total_tokens * fraction)
         remaining_tokens = total_tokens - sell_tokens
-        tx_sig, sol_received = await execute_sell(
-            client, keypair, session,
-            pos.contract_address, sell_tokens, settings,
-        )
+        if pos.paper and current_value is not None:
+            # Paper mode: estimate sol_received from DexScreener value
+            sol_received = current_value * fraction
+            tx_sig = f"paper-partial-{uuid.uuid4().hex[:12]}"
+            logger.info("PAPER PARTIAL SELL (no Jupiter)", token=pos.token_name,
+                        fraction=fraction, sol=sol_received)
+        else:
+            tx_sig, sol_received = await execute_sell(
+                client, keypair, session,
+                pos.contract_address, sell_tokens, settings,
+            )
         await db.log_trade(
             position_id=pos.id,
             side="sell",
@@ -683,12 +689,19 @@ async def _close_position(
     current_value: float,
     pnl_pct: float,
     reason: str,
+    paper: bool = False,
 ) -> str:
     """Execute sell and close position in DB."""
     try:
-        tx_sig, sol_received = await execute_sell(
-            client, keypair, session, contract_address, token_amount, settings,
-        )
+        if paper:
+            # Paper mode: use DexScreener value instead of Jupiter swap
+            tx_sig = f"paper-sell-{uuid.uuid4().hex[:12]}"
+            sol_received = current_value if current_value is not None else 0.0
+            logger.info("PAPER SELL (no Jupiter)", token=token_name, sol=sol_received, reason=reason)
+        else:
+            tx_sig, sol_received = await execute_sell(
+                client, keypair, session, contract_address, token_amount, settings,
+            )
         pnl_sol = sol_received - entry_sol
         pnl_pct = (pnl_sol / entry_sol * 100) if entry_sol > 0 else 0
         await db.close_position(
