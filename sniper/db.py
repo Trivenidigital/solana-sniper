@@ -182,11 +182,21 @@ class Database:
         row = await cursor.fetchone()
         return self._row_to_position(row) if row else None
 
+    async def has_open_position(self, contract_address: str) -> bool:
+        """Check if we already hold an open position for this token."""
+        if self._conn is None:
+            raise RuntimeError("Database not initialized.")
+        cursor = await self._conn.execute(
+            "SELECT 1 FROM positions WHERE contract_address=? AND status='open' LIMIT 1",
+            (contract_address,),
+        )
+        return await cursor.fetchone() is not None
+
     async def count_open_positions(self) -> int:
         if self._conn is None:
             raise RuntimeError("Database not initialized.")
         cursor = await self._conn.execute(
-            "SELECT COUNT(*) FROM positions WHERE status='open' AND paper=0"
+            "SELECT COUNT(*) FROM positions WHERE status='open'"
         )
         row = await cursor.fetchone()
         return row[0] if row else 0
@@ -195,7 +205,7 @@ class Database:
         if self._conn is None:
             raise RuntimeError("Database not initialized.")
         cursor = await self._conn.execute(
-            "SELECT COALESCE(SUM(entry_sol), 0) FROM positions WHERE status='open' AND paper=0"
+            "SELECT COALESCE(SUM(entry_sol), 0) FROM positions WHERE status='open'"
         )
         row = await cursor.fetchone()
         return float(row[0]) if row else 0.0

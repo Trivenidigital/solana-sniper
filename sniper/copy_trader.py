@@ -272,7 +272,7 @@ async def monitor_wallets(settings: Settings, buy_callback, send_telegram_fn=Non
     """)
     await sniper_db.commit()
     try:
-        ws_url = f"wss://mainnet.helius-rpc.com/?api-key={settings.HELIUS_API_KEY}"
+        ws_url = f"wss://mainnet.helius-rpc.com/?api-key={settings.HELIUS_API_KEY}"  # WebSocket requires query param (no header auth)
         # Load persisted last_signatures
         row = await (await sniper_db.execute("SELECT value FROM kv_store WHERE key = 'last_signatures'")).fetchone()
         last_signatures: dict[str, str] = json.loads(row[0]) if row else {}

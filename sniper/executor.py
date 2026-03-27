@@ -240,7 +240,7 @@ async def execute_buy(
                 raise
 
 
-_SELL_SLIPPAGE_TIERS = [500, 1000, 1500, 2500]  # 5%, 10%, 15%, 25%
+_SELL_SLIPPAGE_TIERS = [500, 750, 1000]  # 5%, 7.5%, 10% — capped to avoid compounding rug losses
 
 
 async def execute_sell(

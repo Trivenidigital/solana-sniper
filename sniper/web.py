@@ -858,7 +858,7 @@ async def handle_trade(request: web.Request) -> web.Response:
                 await db.initialize()
                 pos = Position(
                     contract_address=token, token_name=token[:12], ticker=token[:5],
-                    entry_sol=amount, entry_token_amount=tokens, entry_tx=tx_sig, paper=False,
+                    entry_sol=amount, entry_token_amount=tokens, entry_tx=tx_sig, paper=settings.PAPER_MODE,
                     manual=True,
                 )
                 pos_id = await db.open_position(pos)
