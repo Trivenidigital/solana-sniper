@@ -63,9 +63,9 @@ def _conviction_bet_size(conviction: float, settings: Settings) -> float:
     """
     max_bet = settings.KELLY_MAX_BET
     if conviction >= 80:
-        raw = max_bet
+        raw = round(max_bet * 0.75, 4)  # Capped at 75% until score model is validated
     elif conviction >= 75:
-        raw = round(max_bet * 0.90, 4)
+        raw = round(max_bet * 0.75, 4)
     elif conviction >= 70:
         raw = round(max_bet * 0.75, 4)
     elif conviction >= 65:
@@ -258,6 +258,22 @@ async def main() -> None:
                                 *[trigger_godmode_scan(s.contract_address, settings) for s in actionable],
                                 return_exceptions=True,
                             )
+
+                        # Circuit breaker: pause buying after 3 consecutive losses in 1 hour
+                        loss_streak = await db.recent_consecutive_losses(hours=1)
+                        if loss_streak >= 3:
+                            logger.warning(
+                                "Circuit breaker — 3+ consecutive losses in 1hr, skipping buys",
+                                loss_streak=loss_streak,
+                            )
+                            if loss_streak == 3:  # Only notify once (on trigger)
+                                await send_telegram(
+                                    f"Circuit Breaker Triggered\n"
+                                    f"Consecutive losses: {loss_streak} in last hour\n"
+                                    f"Pausing new buys until a win or 1hr passes",
+                                    settings,
+                                )
+                            actionable = []  # Skip all buys this cycle
 
                         # Fetch SOL balance once before iterating signals
                         cycle_balance = await get_sol_balance(rpc_client, pubkey) if not settings.PAPER_MODE else 1.0

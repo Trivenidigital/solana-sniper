@@ -43,7 +43,7 @@ class Position(BaseModel):
         "rug_detected", "momentum_lost", "pump_window_expired", "max_hold_exceeded",
         "sell_pressure", "unsellable", "breakeven_stop",
         "conviction_rug_detected", "conviction_hard_stop",
-        "conviction_max_hold", "conviction_trailing_stop",
+        "conviction_max_hold", "conviction_trailing_stop", "conviction_liq_floor",
     ] | None = None
     status: Literal["open", "closed"] = "open"
     pnl_sol: float | None = None

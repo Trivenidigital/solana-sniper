@@ -201,8 +201,27 @@ async def check_positions(
                     actions.append(action)
                     continue
 
+            # Check 1b: Absolute liquidity floor — exit if liq < $10K regardless of drop %
+            if liq_usd > 0 and liq_usd < settings.MIN_LIQUIDITY_USD:
+                logger.warning(
+                    "Conviction hold: liquidity floor breached",
+                    token=pos.token_name,
+                    conviction=conviction_score,
+                    liq_usd=f"${liq_usd:,.0f}",
+                    floor=f"${settings.MIN_LIQUIDITY_USD:,.0f}",
+                )
+                action = await _close_position(
+                    db, client, keypair, session, settings,
+                    pos.id, pos.contract_address, pos.token_name,
+                    int(pos.entry_token_amount), pos.entry_sol,
+                    current_value, pnl_pct, "conviction_liq_floor",
+                    paper=pos.paper,
+                )
+                actions.append(action)
+                continue
+
             # Check 2: Scaled hard stop — higher conviction = wider stop
-            # 45 conviction → -35% (same as universal), 80+ → -70% (full diamond hands)
+            # 45 conviction → -35% (same as universal), 80+ → capped at -50%
             denom = max(1, 80 - settings.CONVICTION_HOLD_MIN_SCORE)
             scaled_stop = settings.STOP_LOSS_PCT + (
                 (settings.CONVICTION_HOLD_HARD_STOP_PCT - settings.STOP_LOSS_PCT)
@@ -336,8 +355,8 @@ async def check_positions(
             continue
 
         # --- Breakeven stop: after first partial sell, never lose money ---
-        # Use 1% instead of 0% to cover gas/slippage fees
-        if pos.partial_exit_tier >= 1 and pnl_pct <= 1 and pos.id is not None:
+        # Use 6% to cover 5% slippage + gas fees (was 1%, caused -5% avg loss on breakeven exits)
+        if pos.partial_exit_tier >= 1 and pnl_pct <= 6 and pos.id is not None:
             logger.info(
                 "Breakeven stop — locked profit from ladder step 1",
                 token=pos.token_name,

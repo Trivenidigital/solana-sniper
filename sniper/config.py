@@ -128,7 +128,7 @@ class Settings(BaseSettings):
     CONVICTION_HOLD_TRAILING_ACTIVATE_PCT: float = 50.0
     CONVICTION_HOLD_TRAILING_PCT: float = 20.0
     CONVICTION_HOLD_RUG_LIQUIDITY_DROP_PCT: float = 70.0
-    CONVICTION_HOLD_HARD_STOP_PCT: float = 70.0
+    CONVICTION_HOLD_HARD_STOP_PCT: float = 35.0  # Match universal stop loss — 50% was too deep, avg -81% PnL
 
     # Dead code: DCA disabled per user rule (no pyramiding on meme coins)
     DCA_ENABLED: bool = False
