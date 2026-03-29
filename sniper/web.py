@@ -761,7 +761,7 @@ async def handle_dashboard(request: web.Request) -> web.Response:
     ) or 0
     # Check if it's a real streak (no wins mixed in)
     recent_closed = _query(
-        "SELECT pnl_pct FROM positions WHERE status='closed' AND closed_at >= datetime('now', '-1 hour') ORDER BY closed_at DESC LIMIT 10"
+        "SELECT pnl_pct FROM positions WHERE status='closed' AND paper=0 AND closed_at >= datetime('now', '-1 hour') ORDER BY closed_at DESC LIMIT 10"
     )
     streak = 0
     for r in recent_closed:

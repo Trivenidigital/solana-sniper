@@ -244,7 +244,7 @@ class Database:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         cursor = await self._conn.execute(
             "SELECT pnl_pct FROM positions "
-            "WHERE status='closed' AND closed_at > ? "
+            "WHERE status='closed' AND paper=0 AND closed_at > ? "
             "ORDER BY closed_at DESC",
             (cutoff,),
         )
