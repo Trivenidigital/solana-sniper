@@ -755,7 +755,7 @@ async def handle_dashboard(request: web.Request) -> web.Response:
     loss_streak = _scalar(
         """SELECT COUNT(*) FROM (
             SELECT pnl_pct FROM positions
-            WHERE status='closed' AND closed_at >= datetime('now', '-1 hour')
+            WHERE status='closed' AND paper=0 AND closed_at >= datetime('now', '-1 hour')
             ORDER BY closed_at DESC
         ) sub WHERE pnl_pct <= 0"""
     ) or 0
