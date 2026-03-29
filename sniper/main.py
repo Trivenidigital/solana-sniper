@@ -63,9 +63,9 @@ def _conviction_bet_size(conviction: float, settings: Settings) -> float:
     """
     max_bet = settings.KELLY_MAX_BET
     if conviction >= 80:
-        raw = max_bet
+        raw = round(max_bet * 0.75, 4)  # Capped at 75% until score model is validated
     elif conviction >= 75:
-        raw = round(max_bet * 0.90, 4)
+        raw = round(max_bet * 0.75, 4)
     elif conviction >= 70:
         raw = round(max_bet * 0.75, 4)
     elif conviction >= 65:
@@ -259,6 +259,22 @@ async def main() -> None:
                                 return_exceptions=True,
                             )
 
+                        # Circuit breaker: pause buying after 3 consecutive losses in 1 hour
+                        loss_streak = await db.recent_consecutive_losses(hours=1)
+                        if loss_streak >= 3:
+                            logger.warning(
+                                "Circuit breaker — 3+ consecutive losses in 1hr, skipping buys",
+                                loss_streak=loss_streak,
+                            )
+                            if loss_streak == 3:  # Only notify once (on trigger)
+                                await send_telegram(
+                                    f"Circuit Breaker Triggered\n"
+                                    f"Consecutive losses: {loss_streak} in last hour\n"
+                                    f"Pausing new buys until a win or 1hr passes",
+                                    settings,
+                                )
+                            actionable = []  # Skip all buys this cycle
+
                         # Fetch SOL balance once before iterating signals
                         cycle_balance = await get_sol_balance(rpc_client, pubkey) if not settings.PAPER_MODE else 1.0
 
@@ -269,6 +285,12 @@ async def main() -> None:
                             if open_count >= settings.MAX_OPEN_POSITIONS:
                                 logger.info("Max positions reached", count=open_count)
                                 break
+
+                            # Duplicate token check: never buy a token we already hold
+                            if await db.has_open_position(sig_data.contract_address):
+                                logger.debug("Skipping — already have open position",
+                                             token=sig_data.token_name)
+                                continue
 
                             # Conviction-based direct sizing
                             conviction = sig_data.conviction_score or 0
@@ -304,8 +326,23 @@ async def main() -> None:
                                     if dex_resp.status == 200:
                                         dex_data = await dex_resp.json()
                                         if isinstance(dex_data, list) and dex_data:
-                                            live_mcap = float(dex_data[0].get("marketCap") or 0)
-                                            liq_obj = dex_data[0].get("liquidity")
+                                            pair = dex_data[0]
+                                            live_mcap = float(pair.get("marketCap") or 0)
+
+                                            # Real-time peak detection: check if token is dumping after pump
+                                            price_change = pair.get("priceChange") or {}
+                                            pc_5m = float(price_change.get("m5") or 0)
+                                            pc_1h = float(price_change.get("h1") or 0)
+                                            if pc_5m < -5 and pc_1h > 50:
+                                                logger.warning(
+                                                    "Peak detected — price dumping after pump, skipping",
+                                                    token=sig_data.token_name,
+                                                    price_change_5m=f"{pc_5m:.1f}%",
+                                                    price_change_1h=f"{pc_1h:.1f}%",
+                                                )
+                                                continue
+
+                                            liq_obj = pair.get("liquidity")
                                             if liq_obj and isinstance(liq_obj, dict):
                                                 live_liq = float(liq_obj.get("usd", 0) or 0)
                                                 if live_liq > 0 and live_liq < settings.MIN_LIQUIDITY_USD:

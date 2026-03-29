@@ -544,7 +544,8 @@ const exitColors = {
   'trailing_stop': '#d29922', 'take_profit': '#3fb950', 'stop_loss': '#f85149',
   'sell_pressure': '#f0883e', 'momentum_lost': '#8b949e', 'rug_detected': '#f85149',
   'pump_window_expired': '#d29922', 'manual': '#8b949e', 'breakeven_stop': '#58a6ff',
-  'max_hold_exceeded': '#bc8cff', 'unsellable': '#f85149'
+  'max_hold_exceeded': '#bc8cff', 'unsellable': '#f85149',
+  'conviction_liq_floor': '#f0883e'
 };
 if (exitData.length > 0) {
   new Chart(exitCtx, {
@@ -748,10 +749,27 @@ async def handle_dashboard(request: web.Request) -> web.Response:
     net_pnl_usd = net_pnl_sol * sol_price
     today_pnl_usd = today_pnl * sol_price
 
-    # Circuit breaker
+    # Circuit breaker: max positions OR consecutive loss streak
     settings = _get_settings()
     max_open = settings.MAX_OPEN_POSITIONS
-    circuit_breaker = open_count >= max_open
+    loss_streak = _scalar(
+        """SELECT COUNT(*) FROM (
+            SELECT pnl_pct FROM positions
+            WHERE status='closed' AND paper=0 AND closed_at >= datetime('now', '-1 hour')
+            ORDER BY closed_at DESC
+        ) sub WHERE pnl_pct <= 0"""
+    ) or 0
+    # Check if it's a real streak (no wins mixed in)
+    recent_closed = _query(
+        "SELECT pnl_pct FROM positions WHERE status='closed' AND paper=0 AND closed_at >= datetime('now', '-1 hour') ORDER BY closed_at DESC LIMIT 10"
+    )
+    streak = 0
+    for r in recent_closed:
+        if (r.get("pnl_pct") or 0) <= 0:
+            streak += 1
+        else:
+            break
+    circuit_breaker = open_count >= max_open or streak >= 3
 
     # Connection status (any activity in last 5 min)
     last_activity = _scalar(
@@ -858,7 +876,7 @@ async def handle_trade(request: web.Request) -> web.Response:
                 await db.initialize()
                 pos = Position(
                     contract_address=token, token_name=token[:12], ticker=token[:5],
-                    entry_sol=amount, entry_token_amount=tokens, entry_tx=tx_sig, paper=False,
+                    entry_sol=amount, entry_token_amount=tokens, entry_tx=tx_sig, paper=settings.PAPER_MODE,
                     manual=True,
                 )
                 pos_id = await db.open_position(pos)
