@@ -63,11 +63,11 @@ def _conviction_bet_size(conviction: float, settings: Settings) -> float:
     """
     max_bet = settings.KELLY_MAX_BET
     if conviction >= 80:
-        raw = round(max_bet * 0.75, 4)  # Capped at 75% until score model is validated
+        raw = round(max_bet * 0.50, 4)  # Reduced from 0.75 — 70+ tier has 20% win rate, biggest loser
     elif conviction >= 75:
-        raw = round(max_bet * 0.75, 4)
+        raw = round(max_bet * 0.50, 4)
     elif conviction >= 70:
-        raw = round(max_bet * 0.75, 4)
+        raw = round(max_bet * 0.50, 4)
     elif conviction >= 65:
         raw = round(max_bet * 0.60, 4)
     elif conviction >= 60:
