@@ -294,6 +294,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="sub">{{ winners }}/{{ total_closed }}</div>
   </div>
   <div class="metric-card">
+    <div class="label">Profit Factor</div>
+    <div class="value {{ 'positive' if profit_factor >= 1 else 'negative' }}">{{ "%.2f"|format(profit_factor) }}</div>
+    <div class="sub">{{ ">1 = profitable" if profit_factor >= 1 else "<1 = losing" }}</div>
+  </div>
+  <div class="metric-card">
+    <div class="label">Expectancy</div>
+    <div class="value {{ 'positive' if expectancy >= 0 else 'negative' }}">{{ "%.4f"|format(expectancy) }}</div>
+    <div class="sub">SOL/trade (${{ "%.2f"|format(expectancy * sol_price) }})</div>
+  </div>
+  <div class="metric-card">
     <div class="label">Bankroll</div>
     <div class="value neutral">{{ "%.4f"|format(sol_balance) }}</div>
     <div class="sub">SOL (${{ "%.2f"|format(sol_balance * sol_price) }})</div>
@@ -691,6 +701,14 @@ async def handle_dashboard(request: web.Request) -> web.Response:
     winners = sum(1 for p in closed_positions if (p.get("pnl_sol", 0) or 0) > 0)
     total_closed = len(closed_positions)
     win_rate = (winners / total_closed * 100) if total_closed > 0 else 0
+
+    # Profit factor = gross wins / gross losses (>1 = profitable)
+    gross_wins = sum((p.get("pnl_sol", 0) or 0) for p in closed_positions if (p.get("pnl_sol", 0) or 0) > 0)
+    gross_losses = abs(sum((p.get("pnl_sol", 0) or 0) for p in closed_positions if (p.get("pnl_sol", 0) or 0) < 0))
+    profit_factor = (gross_wins / gross_losses) if gross_losses > 0 else 0
+
+    # Expectancy = avg SOL per trade (positive = making money per trade)
+    expectancy = (realized_pnl / total_closed) if total_closed > 0 else 0
     total_trades = _scalar("SELECT COUNT(*) FROM trades")
 
     for p in closed_positions:
@@ -783,6 +801,7 @@ async def handle_dashboard(request: web.Request) -> web.Response:
         open_count=open_count, exposure=exposure, realized_pnl=realized_pnl,
         unrealized_pnl=unrealized_pnl, total_trades=total_trades,
         win_rate=win_rate, winners=winners, total_closed=total_closed,
+        profit_factor=profit_factor, expectancy=expectancy,
         sol_price=sol_price, sol_balance=sol_balance,
         wallet_pubkey=wallet_pubkey, scanner=scanner,
         open_positions=open_positions, closed_positions=closed_positions,
@@ -804,12 +823,18 @@ async def handle_api(request: web.Request) -> web.Response:
     realized_pnl = sum(p.get("pnl_sol", 0) or 0 for p in closed_positions)
     winners = sum(1 for p in closed_positions if (p.get("pnl_sol", 0) or 0) > 0)
     total_closed = len(closed_positions)
+    gross_wins = sum((p.get("pnl_sol", 0) or 0) for p in closed_positions if (p.get("pnl_sol", 0) or 0) > 0)
+    gross_losses = abs(sum((p.get("pnl_sol", 0) or 0) for p in closed_positions if (p.get("pnl_sol", 0) or 0) < 0))
+    profit_factor = (gross_wins / gross_losses) if gross_losses > 0 else 0
+    expectancy = (realized_pnl / total_closed) if total_closed > 0 else 0
 
     data = {
         "open_positions": len(open_positions),
         "exposure_sol": round(exposure, 4),
         "realized_pnl_sol": round(realized_pnl, 4),
         "win_rate": round(winners / total_closed * 100, 1) if total_closed > 0 else 0,
+        "profit_factor": round(profit_factor, 2),
+        "expectancy_sol": round(expectancy, 4),
         "total_trades": _scalar("SELECT COUNT(*) FROM trades"),
         "positions": open_positions + closed_positions,
     }
