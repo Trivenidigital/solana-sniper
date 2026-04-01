@@ -651,6 +651,7 @@ async def main() -> None:
                                             entry_liquidity_usd=live_liq,
                                             entry_mcap_usd=live_mcap,
                                             entry_age_minutes=token_age_min,
+                                            signals_fired=sig_data.signals_fired,
                                         )
                                         pos_id = await db.open_position(pos)
                                         await db.log_trade(

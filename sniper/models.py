@@ -22,6 +22,7 @@ class Signal(BaseModel):
     quant_score: float | None = 0
     top3_wallet_concentration: float = 0
     holder_count: int = 0
+    signals_fired: str | None = None
 
 
 class Position(BaseModel):
