@@ -44,6 +44,7 @@ class Position(BaseModel):
         "sell_pressure", "unsellable", "breakeven_stop",
         "conviction_rug_detected", "conviction_hard_stop",
         "conviction_max_hold", "conviction_trailing_stop", "conviction_liq_floor",
+        "startup_stale_conviction", "startup_stale_phase4",
     ] | None = None
     status: Literal["open", "closed"] = "open"
     pnl_sol: float | None = None
@@ -61,6 +62,8 @@ class Position(BaseModel):
     conviction_score: float | None = None
     entry_liquidity_usd: float = 0
     entry_mcap_usd: float = 0
+    entry_age_minutes: float | None = None
+    signals_fired: str | None = None  # Comma-separated signal names from scout
     manual: bool = False
 
 
