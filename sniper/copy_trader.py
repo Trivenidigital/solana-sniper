@@ -278,6 +278,8 @@ async def monitor_wallets(settings: Settings, buy_callback, send_telegram_fn=Non
         last_signatures: dict[str, str] = json.loads(row[0]) if row else {}
         last_injection_time = datetime.now(timezone.utc)
         logger.info("Copy trading started", wallets=len(tracked))
+        _ws_backoff = 3  # seconds — grows exponentially on consecutive failures
+        _WS_BACKOFF_MAX = 300  # 5 minute cap
         async with aiohttp.ClientSession() as helius_session:
             while True:
                 heartbeat_task = None
@@ -302,6 +304,7 @@ async def monitor_wallets(settings: Settings, buy_callback, send_telegram_fn=Non
                                     confirmed += 1
                         except asyncio.TimeoutError:
                             pass
+                        _ws_backoff = 3  # Reset backoff on successful connection
                         logger.info("WebSocket connected", subs=confirmed, total=len(tracked))
                         await _backfill_after_reconnect(tracked, settings, last_signatures, scout_db_conn, send_telegram_fn)
                         await sniper_db.execute(
@@ -368,8 +371,9 @@ async def monitor_wallets(settings: Settings, buy_callback, send_telegram_fn=Non
                             except Exception as e:
                                 logger.debug("WS parse error", error=str(e))
                 except Exception as e:
-                    logger.warning("WS disconnected, reconnecting", error=str(e))
-                    await asyncio.sleep(3)
+                    logger.warning("WS disconnected, reconnecting", error=str(e), backoff_s=_ws_backoff)
+                    await asyncio.sleep(_ws_backoff)
+                    _ws_backoff = min(_ws_backoff * 2, _WS_BACKOFF_MAX)
                 finally:
                     if heartbeat_task is not None:
                         heartbeat_task.cancel()
