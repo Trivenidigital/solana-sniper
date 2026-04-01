@@ -12,7 +12,7 @@ from solders.keypair import Keypair
 
 from sniper.config import Settings
 from sniper.db import Database
-from sniper.executor import execute_buy, execute_sell
+from sniper.executor import execute_sell
 from sniper.jupiter import SOL_MINT, LAMPORTS_PER_SOL, get_quote
 from sniper.telegram_notify import send_telegram
 
