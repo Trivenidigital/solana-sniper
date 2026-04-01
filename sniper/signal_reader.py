@@ -56,11 +56,18 @@ async def read_new_signals(
                        COALESCE(a.liquidity_usd, 0) AS liquidity_usd,
                        0 AS volume_24h_usd,
                        a.alerted_at,
-                       0 AS token_age_days,
-                       0 AS top3_wallet_concentration,
-                       0 AS holder_count
+                       COALESCE(ss.token_age_days, 0) AS token_age_days,
+                       COALESCE(c.top3_wallet_concentration, 0) AS top3_wallet_concentration,
+                       COALESCE(c.holder_count, 0) AS holder_count,
+                       ss.signals_fired
                 FROM alerts a
                 LEFT JOIN candidates c ON a.contract_address = c.contract_address
+                LEFT JOIN signal_snapshots ss ON a.contract_address = ss.contract_address
+                  AND ss.alerted = 1
+                  AND ss.id = (
+                    SELECT MAX(ss2.id) FROM signal_snapshots ss2
+                    WHERE ss2.contract_address = a.contract_address AND ss2.alerted = 1
+                  )
                 WHERE a.chain = 'solana'
                   AND a.conviction_score >= ?
                   AND a.alerted_at > ?

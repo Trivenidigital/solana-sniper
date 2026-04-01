@@ -191,6 +191,7 @@ async def main() -> None:
 
     last_signal_check = datetime.min.replace(tzinfo=timezone.utc)
     cycle_count = 0
+    _cb_was_active = False  # Track circuit breaker state for reset notification
 
     # Start background dashboard
     dash_task = asyncio.create_task(
@@ -276,14 +277,23 @@ async def main() -> None:
                                 "Circuit breaker — 3+ consecutive losses in 1hr, skipping buys",
                                 loss_streak=loss_streak,
                             )
-                            if loss_streak == 3:  # Only notify once (on trigger)
+                            if not _cb_was_active:  # Notify once on trigger
                                 await send_telegram(
                                     f"Circuit Breaker Triggered\n"
                                     f"Consecutive losses: {loss_streak} in last hour\n"
                                     f"Pausing new buys until a win or 1hr passes",
                                     settings,
                                 )
+                            _cb_was_active = True
                             actionable = []  # Skip all buys this cycle
+                        elif _cb_was_active:
+                            _cb_was_active = False
+                            logger.info("Circuit breaker cleared", loss_streak=loss_streak)
+                            await send_telegram(
+                                f"Circuit Breaker Cleared\n"
+                                f"Loss streak broken — resuming trading",
+                                settings,
+                            )
 
                         # Fetch SOL balance once before iterating signals
                         cycle_balance = await get_sol_balance(rpc_client, pubkey) if not settings.PAPER_MODE else 1.0
@@ -637,9 +647,11 @@ async def main() -> None:
                                             entry_tx=r["tx"],
                                             paper=settings.PAPER_MODE,
                                             decimals=r.get("decimals"),
-                                            conviction_score=conviction,  # Use boosted conviction (includes smart money), not raw sig_data score
+                                            conviction_score=conviction,
                                             entry_liquidity_usd=live_liq,
                                             entry_mcap_usd=live_mcap,
+                                            entry_age_minutes=token_age_min,
+                                            signals_fired=sig_data.signals_fired,
                                         )
                                         pos_id = await db.open_position(pos)
                                         await db.log_trade(
@@ -714,9 +726,10 @@ async def main() -> None:
                                         entry_tx=tx_sig,
                                         paper=settings.PAPER_MODE,
                                         decimals=decimals,
-                                        conviction_score=conviction,  # Use boosted conviction (includes smart money), not raw sig_data score
+                                        conviction_score=conviction,
                                         entry_liquidity_usd=live_liq,
                                         entry_mcap_usd=live_mcap,
+                                        entry_age_minutes=token_age_min,
                                     )
                                     pos_id = await db.open_position(pos)
                                     await db.log_trade(

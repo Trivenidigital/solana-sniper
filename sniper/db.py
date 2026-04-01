@@ -98,6 +98,8 @@ class Database:
             ("conviction_score", "REAL"),
             ("entry_liquidity_usd", "REAL DEFAULT 0"),
             ("entry_mcap_usd", "REAL DEFAULT 0"),
+            ("entry_age_minutes", "REAL"),
+            ("signals_fired", "TEXT"),
             ("manual", "INTEGER DEFAULT 0"),
         ]:
             try:
@@ -127,14 +129,16 @@ class Database:
             """INSERT INTO positions
                (contract_address, token_name, ticker, entry_sol, entry_token_amount,
                 entry_price_usd, entry_tx, status, paper, opened_at, decimals,
-                conviction_score, entry_liquidity_usd, entry_mcap_usd, manual)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)""",
+                conviction_score, entry_liquidity_usd, entry_mcap_usd,
+                entry_age_minutes, signals_fired, manual)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 pos.contract_address, pos.token_name, pos.ticker,
                 pos.entry_sol, pos.entry_token_amount, pos.entry_price_usd,
                 pos.entry_tx, 1 if pos.paper else 0,
                 pos.opened_at.isoformat(), pos.decimals,
                 pos.conviction_score, pos.entry_liquidity_usd, pos.entry_mcap_usd,
+                pos.entry_age_minutes, pos.signals_fired,
                 1 if pos.manual else 0,
             ),
         )

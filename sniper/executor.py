@@ -39,11 +39,9 @@ async def _get_healthy_client(client: AsyncClient, settings: Settings) -> AsyncC
     except Exception:
         logger.warning("Primary RPC unhealthy, trying fallbacks")
 
-    if not _rpc_clients:
-        if settings.SOLANA_RPC_URLS:
-            urls = [u.strip() for u in settings.SOLANA_RPC_URLS.split(",") if u.strip()]
-            for url in urls:
-                _rpc_clients.append(AsyncClient(url))
+    if not _rpc_clients and settings.SOLANA_RPC_URLS:
+        urls = [u.strip() for u in settings.SOLANA_RPC_URLS.split(",") if u.strip()]
+        _rpc_clients.extend(AsyncClient(url) for url in urls)
 
     for rpc_client in _rpc_clients:
         try:
