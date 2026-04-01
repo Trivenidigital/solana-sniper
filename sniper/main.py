@@ -16,7 +16,7 @@ from sniper.db import Database
 from sniper.executor import execute_buy, execute_buy_split
 from sniper.models import Position
 from sniper.multi_wallet import copy_buy, load_wallets, get_all_balances
-from sniper.position_manager import check_positions, portfolio_summary
+from sniper.position_manager import check_positions, portfolio_summary, recover_stale_positions
 from sniper.godmode import check_godmode_bundles
 from sniper.safety import check_token_safety  # GoPlus — fallback when Rugcheck is down
 from sniper.signal_reader import filter_actionable, read_new_signals
@@ -224,6 +224,16 @@ async def main() -> None:
 
     try:
         async with aiohttp.ClientSession() as session:
+            # Immediately close any positions that exceeded max hold while bot was down
+            try:
+                stale_actions = await recover_stale_positions(
+                    db, rpc_client, keypair, session, settings,
+                )
+                for a in stale_actions:
+                    logger.info("Startup recovery action", action=a)
+            except Exception as e:
+                logger.error("Startup recovery failed — will retry in main loop", error=str(e))
+
             while not shutdown_event.is_set():
                 try:
                     now = datetime.now(timezone.utc)

@@ -81,6 +81,74 @@ async def _fetch_position_data(
         return None, None, 0
 
 
+async def recover_stale_positions(
+    db: Database,
+    client: AsyncClient,
+    keypair: Keypair,
+    session: aiohttp.ClientSession,
+    settings: Settings,
+) -> list[str]:
+    """On startup, immediately close any position that exceeded its max hold time
+    while the bot was down.  This prevents stale positions from sitting open for
+    hours/days after a crash or restart."""
+    positions = await db.get_open_positions()
+    if not positions:
+        return []
+
+    actions: list[str] = []
+    active_positions = [pos for pos in positions if not pos.manual]
+
+    for pos in active_positions:
+        age_minutes = (datetime.now(timezone.utc) - pos.opened_at).total_seconds() / 60
+        conviction_score = pos.conviction_score or 0
+        is_conviction = (
+            settings.CONVICTION_HOLD_ENABLED
+            and conviction_score >= settings.CONVICTION_HOLD_MIN_SCORE
+        )
+
+        # Determine the max hold limit for this position
+        if is_conviction:
+            max_hold = settings.CONVICTION_HOLD_MAX_HOLD_MIN  # 240 min default
+        else:
+            max_hold = settings.MAX_HOLD_MIN  # 180 min default (phase 4)
+
+        if age_minutes <= max_hold:
+            continue
+
+        # Position exceeded max hold — fetch price and close immediately
+        logger.warning(
+            "Startup recovery: stale position exceeded max hold",
+            token=pos.token_name,
+            age_minutes=f"{age_minutes:.0f}",
+            max_hold_min=max_hold,
+            conviction=conviction_score,
+        )
+        pos_data = await _fetch_position_data(
+            session, pos.contract_address, int(pos.entry_token_amount),
+            decimals=pos.decimals if pos.decimals is not None else 9,
+        )
+        if isinstance(pos_data, Exception) or pos_data[0] is None:
+            logger.error("Startup recovery: could not fetch price, will retry in main loop",
+                         token=pos.token_name)
+            continue
+
+        current_value = pos_data[0]
+        pnl_pct = ((current_value - pos.entry_sol) / pos.entry_sol) * 100
+        reason = "startup_stale_conviction" if is_conviction else "startup_stale_phase4"
+        action = await _close_position(
+            db, client, keypair, session, settings,
+            pos.id, pos.contract_address, pos.token_name,
+            int(pos.entry_token_amount), pos.entry_sol,
+            current_value, pnl_pct, reason,
+            paper=pos.paper,
+        )
+        actions.append(action)
+
+    if actions:
+        logger.info("Startup recovery complete", closed=len(actions))
+    return actions
+
+
 async def check_positions(
     db: Database,
     client: AsyncClient,
