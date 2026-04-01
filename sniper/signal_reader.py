@@ -13,6 +13,31 @@ from sniper.models import Signal
 logger = structlog.get_logger()
 
 
+async def validate_scout_db(scout_db_path: Path, settings: Settings) -> bool:
+    """Run a test query against scout DB on startup. Fail loudly if broken."""
+    try:
+        async with aiosqlite.connect(str(scout_db_path)) as conn:
+            await conn.execute("PRAGMA busy_timeout=5000")
+            cursor = await conn.execute(
+                "SELECT COUNT(*) FROM alerts "
+                "LEFT JOIN candidates c ON alerts.contract_address = c.contract_address "
+                "LIMIT 1"
+            )
+            row = await cursor.fetchone()
+            logger.info("Scout DB validation passed", alerts=row[0], path=str(scout_db_path))
+            return True
+    except Exception as e:
+        logger.critical("Scout DB validation FAILED — sniper cannot read signals", error=str(e), path=str(scout_db_path))
+        from sniper.telegram_notify import send_telegram
+        await send_telegram(
+            f"CRITICAL: Scout DB read failed on startup\n"
+            f"Error: {e}\n"
+            f"Sniper will NOT receive signals until fixed!",
+            settings,
+        )
+        return False
+
+
 def _ensure_utc(dt: datetime) -> datetime:
     """Ensure datetime is timezone-aware (UTC)."""
     if dt.tzinfo is None:

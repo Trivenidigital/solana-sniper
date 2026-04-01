@@ -19,7 +19,7 @@ from sniper.multi_wallet import copy_buy, load_wallets, get_all_balances
 from sniper.position_manager import check_positions, portfolio_summary, recover_stale_positions
 from sniper.godmode import check_godmode_bundles
 from sniper.safety import check_token_safety  # GoPlus — fallback when Rugcheck is down
-from sniper.signal_reader import filter_actionable, read_new_signals
+from sniper.signal_reader import filter_actionable, read_new_signals, validate_scout_db
 from sniper.telegram_bot import is_paused
 from sniper.telegram_notify import send_telegram
 from sniper.wallet import get_sol_balance, load_keypair
@@ -234,6 +234,9 @@ async def main() -> None:
                     logger.info("Startup recovery action", action=a)
             except Exception as e:
                 logger.error("Startup recovery failed — will retry in main loop", error=str(e))
+
+            # Validate scout DB is readable before entering main loop
+            await validate_scout_db(settings.SCOUT_DB_PATH, settings)
 
             while not shutdown_event.is_set():
                 try:
