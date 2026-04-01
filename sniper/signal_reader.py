@@ -54,7 +54,7 @@ async def read_new_signals(
                        COALESCE(c.ticker, '') AS ticker,
                        a.conviction_score,
                        COALESCE(a.market_cap_usd, 0) AS market_cap_usd,
-                       COALESCE(a.liquidity_usd, 0) AS liquidity_usd,
+                       COALESCE(c.liquidity_usd, 0) AS liquidity_usd,
                        0 AS volume_24h_usd,
                        a.alerted_at,
                        COALESCE(ss.token_age_days, 0) AS token_age_days,
