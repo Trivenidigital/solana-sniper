@@ -82,8 +82,8 @@ async def read_new_signals(
                 alerted_at = datetime.fromisoformat(d["alerted_at"])
                 d["alerted_at"] = _ensure_utc(alerted_at)
                 signals.append(Signal(**d))
-    except Exception:
-        logger.warning("Failed to read scout database", path=str(scout_db_path), exc_info=True)
+    except Exception as e:
+        logger.warning("Failed to read scout database", path=str(scout_db_path), error=str(e))
 
     if signals:
         logger.info("New signals from scout", count=len(signals))
