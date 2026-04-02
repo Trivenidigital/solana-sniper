@@ -58,9 +58,9 @@ async def read_new_signals(
     signals: list[Signal] = []
 
     try:
-        async with aiosqlite.connect(str(scout_db_path)) as conn:
+        db_uri = f"file:{scout_db_path}?mode=ro"
+        async with aiosqlite.connect(db_uri, uri=True) as conn:
             await conn.execute("PRAGMA busy_timeout=5000")
-            await conn.execute("PRAGMA query_only=1")
             conn.row_factory = aiosqlite.Row
             # TODO: The scout should snapshot quality fields (market_cap_usd,
             # liquidity_usd, volume_24h_usd, token_age_days,
